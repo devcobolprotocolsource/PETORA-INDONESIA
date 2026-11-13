@@ -1,0 +1,66 @@
+{
+  "name": "openvpm",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check",
+    "test": "turbo test",
+    "db:push": "pnpm --filter @openpims/db db:push",
+    "db:generate": "pnpm --filter @openpims/db db:generate",
+    "db:migrate": "pnpm --filter @openpims/db db:migrate",
+    "db:seed": "pnpm --filter @openpims/db db:seed",
+    "db:reset": "pnpm --filter @openpims/db db:reset",
+    "db:rls": "pnpm --filter @openpims/db db:rls",
+    "db:rls:preflight": "pnpm --filter @openpims/db db:rls:preflight",
+    "db:rls:test": "pnpm --filter @openpims/db db:rls:test",
+    "db:drift": "pnpm --filter @openpims/db db:drift",
+    "db:baseline": "pnpm --filter @openpims/db db:baseline",
+    "db:studio": "pnpm --filter @openpims/db db:studio",
+    "clean": "turbo clean",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "verify:oss-release": "node scripts/verify-oss-release.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "turbo": "^2.9.14"
+  },
+  "pnpm": {
+    "overrides": {
+      "@ai-sdk/provider-utils@4": "4.0.46",
+      "drizzle-kit@0.31.10>@esbuild-kit/esm-loader": "-",
+      "axios": "1.20.0",
+      "brace-expansion": "2.1.4",
+      "browserslist": "4.28.7",
+      "dompurify": "3.4.17",
+      "fast-xml-builder": "1.1.7",
+      "fast-xml-parser": "5.10.1",
+      "fflate": "0.8.3",
+      "follow-redirects": "1.16.2",
+      "form-data": "4.0.6",
+      "@tiptap/extension-bubble-menu": "3.30.5",
+      "@tiptap/extension-floating-menu": "3.30.5",
+      "js-cookie": "3.0.8",
+      "linkify-it": "5.0.2",
+      "lodash": "4.18.1",
+      "nanoid@^3.3.0": "3.3.18",
+      "postcss": "8.5.26",
+      "postcss-selector-parser": "6.1.5",
+      "prismjs": "1.30.0",
+      "qs": "6.16.0",
+      "sharp": "0.35.5",
+      "source-map-js": "1.2.2",
+      "tinypool": "2.1.2",
+      "undici@6": "6.29.1",
+      "uuid": "11.1.1",
+      "vite@7": "7.3.7",
+      "zod@4": "4.6.7"
+    }
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": "^24.22.1"
+  }
+}

@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+
+# Build
+dist/
+*.tsbuildinfo
+
+# Turbo
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+npm-debug.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+
+# Internal build/launch docs (not for public repo)
+PIMS-CLAUDE-CODE-PROMPT.md
+LAUNCH-*.md
+DEMO-WALKTHROUGH-SCRIPT.md
+WEBSITE-BUILD-PROMPT.md
+.vercel
+docs/screenshots/audit/
+test-results/
+playwright-report/
+CAVSG_AI_Innovator_Survey_COMPLETED.docx
+package-lock.json
+
+# Local MCP server config (not for the public repo)
+.mcp.json
+.codex/
+.gstack/
+
+# Local Supabase CLI project linkage and generated state
+/supabase/.temp/
+# Generated public-only offline shell; built from apps/web/offline on build/dev.
+apps/web/public/offline/

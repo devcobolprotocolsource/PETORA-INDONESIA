@@ -1,0 +1,1148 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => {
+  const resendSend = vi.fn();
+  return {
+    billingEnforced: vi.fn(() => false),
+    resendSend,
+    Resend: vi.fn(() => ({
+      emails: { send: resendSend },
+    })),
+  };
+});
+
+vi.mock("@/lib/billing/plans", () => ({
+  billingEnforced: mocks.billingEnforced,
+  TRIAL_DAYS: 14,
+}));
+
+vi.mock("resend", () => ({
+  Resend: mocks.Resend,
+}));
+
+async function loadEmail() {
+  vi.resetModules();
+  return import("../email");
+}
+
+async function loadEmailBrand() {
+  vi.resetModules();
+  return import("@openpims/email");
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  mocks.billingEnforced.mockReturnValue(false);
+  mocks.resendSend.mockReset();
+  mocks.Resend.mockImplementation(() => ({
+    emails: { send: mocks.resendSend },
+  }));
+});
+
+describe("sendEmail", () => {
+  it("logs to console in self-hosted/dev mode without Resend", async () => {
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({ success: true, id: "dev-console" });
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "[Email] No RESEND_API_KEY configured – logging email to console",
+    );
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    consoleLog.mockRestore();
+  });
+
+  it("fails closed in hosted mode without Resend", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({
+      success: false,
+      error: "Email provider is not configured for hosted sending.",
+    });
+
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    consoleLog.mockRestore();
+  });
+
+  it("treats a blank Resend API key as missing in hosted mode", async () => {
+    vi.stubEnv("RESEND_API_KEY", "   ");
+    mocks.billingEnforced.mockReturnValue(true);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({
+      success: false,
+      error: "Email provider is not configured for hosted sending.",
+    });
+
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    consoleLog.mockRestore();
+  });
+
+  it("forces the console provider in demo mode even when Resend is configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", " true ");
+    vi.stubEnv("RESEND_API_KEY", "re_preview_live_key");
+    mocks.billingEnforced.mockReturnValue(true);
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendEmail, verificationEmailProvider } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({ success: true, id: "dev-console" });
+
+    expect(consoleLog).toHaveBeenCalled();
+    expect(verificationEmailProvider()).toBe("console");
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+    consoleLog.mockRestore();
+  });
+
+  it("uses Resend when a provider key is configured", async () => {
+    vi.stubEnv("RESEND_API_KEY", " re_test ");
+    vi.stubEnv("EMAIL_FROM", " OpenVPM <clinic@example.com> ");
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { EMAIL_SEND_TIMEOUT_MS, sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    expect(mocks.Resend).toHaveBeenCalledWith("re_test");
+    expect(mocks.resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: "OpenVPM <clinic@example.com>",
+        to: "client@example.com",
+        subject: "Reminder",
+      }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(EMAIL_SEND_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it("falls back from blank from/reply-to values before sending", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_FROM", "   ");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: "client@example.com",
+        from: "\t",
+        replyTo: " ",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      from: "PETORA INDONESIA <noreply@mail.openvpm.com>",
+      to: "client@example.com",
+      subject: "Reminder",
+    });
+    expect(payload).not.toHaveProperty("replyTo");
+  });
+
+  it("keeps provider ids on notification template helper results", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend
+      .mockResolvedValueOnce({ data: { id: "email-appt-1" } })
+      .mockResolvedValueOnce({ data: { id: "email-vax-1" } })
+      .mockResolvedValueOnce({ data: { id: "email-invoice-1" } });
+    const {
+      sendAppointmentReminder,
+      sendInvoiceEmail,
+      sendVaccinationReminder,
+    } = await loadEmail();
+
+    await expect(
+      sendAppointmentReminder({
+        to: "client@example.com",
+        clientName: "Ada Lovelace",
+        patientName: "Miso",
+        appointmentDate: "July 2",
+        appointmentTime: "9:00 AM",
+        practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-appt-1",
+      outcome: "accepted",
+    });
+    expect(mocks.resendSend).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+      }),
+    );
+
+    await expect(
+      sendVaccinationReminder({
+        to: "client@example.com",
+        clientName: "Ada Lovelace",
+        patientName: "Miso",
+        vaccineName: "Rabies",
+        dueDate: "July 2",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toMatchObject({ success: true, id: "email-vax-1" });
+
+    await expect(
+      sendInvoiceEmail({
+        to: "client@example.com",
+        clientName: "Ada Lovelace",
+        invoiceTotal: "$123.45",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toMatchObject({ success: true, id: "email-invoice-1" });
+  });
+
+  it("keeps verification provider evidence without claiming a trial is active", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
+    const { sendVerificationEmail } = await loadEmail();
+
+    await expect(
+      sendVerificationEmail({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-verify-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "admin@example.com",
+      subject: "Verify your PETORA INDONESIA email",
+    });
+    expect(payload.html).not.toContain("Your trial is already active.");
+    expect(payload.html).toContain("Confirm email");
+    expect(payload.html).not.toMatch(
+      /activate your account|start your free trial/i,
+    );
+  });
+
+  it("attaches a durable attempt tag and Resend idempotency key to tracked verification", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+    const attemptId = "00000000-0000-4000-8000-000000000001";
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId,
+        idempotencyKey: `auth-email:${attemptId}`,
+      }),
+    ).resolves.toEqual({
+      success: true,
+      provider: "resend",
+      id: "email-verify-1",
+      outcome: "accepted",
+    });
+
+    expect(mocks.resendSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tags: [
+          { name: "openvpm_attempt_id", value: attemptId },
+          { name: "openvpm_email_kind", value: "auth_verification" },
+        ],
+      }),
+      expect.objectContaining({ idempotencyKey: `auth-email:${attemptId}` }),
+    );
+  });
+
+  it("redacts the auth recipient from development fallback logs", async () => {
+    const consoleLog = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      provider: "console",
+      id: "dev-console:auth-email:00000000-0000-4000-8000-000000000001",
+      outcome: "accepted",
+    });
+
+    expect(consoleLog).toHaveBeenCalledWith(
+      "  To:      [redacted auth recipient]",
+    );
+    expect(JSON.stringify(consoleLog.mock.calls)).not.toContain(
+      "private-owner@example.com",
+    );
+    consoleLog.mockRestore();
+  });
+
+  it("models hosted missing configuration as a definite Resend failure", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      provider: "resend",
+      outcome: "definite_failure",
+      failureCode: "provider_not_configured",
+    });
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("redacts auth verification provider rejection detail from logs", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.resendSend.mockResolvedValue({
+      data: null,
+      error: {
+        message: "Rejected private-owner@example.com",
+        name: "validation_error",
+        statusCode: 422,
+      },
+    });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "private-owner@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      failureCode: "provider_rejected",
+    });
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[Email] Resend error:",
+      "auth verification provider rejection",
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "private-owner@example.com",
+    );
+    consoleError.mockRestore();
+  });
+
+  it("classifies a missing provider id as an unknown outcome", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend.mockResolvedValue({ data: null, error: null });
+    const { sendVerificationEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      sendVerificationEmailWithProviderEvidence({
+        to: "admin@example.com",
+        name: "Dr Admin",
+        verifyUrl: "https://app.openvpm.com/verify-email?token=safe-token",
+        attemptId: "00000000-0000-4000-8000-000000000001",
+        idempotencyKey: "auth-email:00000000-0000-4000-8000-000000000001",
+      }),
+    ).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+      failureCode: "missing_provider_id",
+    });
+  });
+
+  it("aborts hung Resend sends and returns a timeout error", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.billingEnforced.mockReturnValue(true);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.resendSend.mockImplementation(
+      (_payload: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((resolve) => {
+          options?.signal?.addEventListener("abort", () => {
+            resolve({
+              data: null,
+              error: {
+                message:
+                  "Unable to fetch data. The request could not be resolved.",
+                statusCode: null,
+                name: "application_error",
+              },
+            });
+          });
+        }),
+    );
+    const { EMAIL_SEND_TIMEOUT_MS, sendEmail } = await loadEmail();
+
+    const result = sendEmail({
+      to: "client@example.com",
+      subject: "Reminder",
+      html: "<p>Hello</p>",
+    });
+    await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+
+    await expect(result).resolves.toEqual({
+      success: false,
+      error: `Email send timed out after ${EMAIL_SEND_TIMEOUT_MS}ms`,
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[Email] Resend error:",
+      expect.objectContaining({ name: "application_error" }),
+    );
+  });
+});
+
+describe("appointment reminder email outcomes", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  it("reports a timed-out reminder as an unknown outcome", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockImplementation(
+      (_payload: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+    const { EMAIL_SEND_TIMEOUT_MS, sendAppointmentReminder } =
+      await loadEmail();
+
+    const result = sendAppointmentReminder(reminder);
+    await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+
+    await expect(result).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+    });
+  });
+
+  it.each(["invalid_idempotent_request", "concurrent_idempotent_requests"])(
+    "reports a %s conflict as an unknown outcome",
+    async (name) => {
+      vi.stubEnv("RESEND_API_KEY", "re_test");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mocks.resendSend.mockResolvedValueOnce({
+        data: null,
+        error: { message: "conflict", statusCode: 409, name },
+      });
+      const { sendAppointmentReminder } = await loadEmail();
+
+      const result = await sendAppointmentReminder(reminder);
+      expect(result).toMatchObject({ success: false, outcome: "outcome_unknown" });
+      // Only a changed payload is reported as a conflict staff must follow
+      // up; a concurrent request is still in flight.
+      expect(Boolean(result.idempotencyConflict)).toBe(
+        name === "invalid_idempotent_request",
+      );
+    },
+  );
+
+  it("reports a provider rejection as a definite failure", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockResolvedValueOnce({
+      data: null,
+      error: { message: "bad from", statusCode: 422, name: "validation_error" },
+    });
+    const { sendAppointmentReminder } = await loadEmail();
+
+    await expect(sendAppointmentReminder(reminder)).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+    });
+  });
+});
+
+describe("appointment reminder email outcomes through the Resend SDK", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  // Drive the real SDK against a stubbed fetch, so these cases cover how the
+  // SDK itself reports transport and gateway failures.
+  async function sendThroughRealSdk(fetchImpl: typeof fetch) {
+    const actual = await vi.importActual<typeof import("resend")>("resend");
+    mocks.Resend.mockImplementation(
+      (key?: string) => new actual.Resend(key) as never,
+    );
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubGlobal("fetch", vi.fn(fetchImpl));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { sendAppointmentReminder } = await loadEmail();
+    return sendAppointmentReminder(reminder);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a connection reset as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          }),
+        });
+      }),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 502 HTML gateway page as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response("<html><body>502 Bad Gateway</body></html>", {
+            status: 502,
+            headers: { "content-type": "text/html" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 500 provider error as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 500,
+              name: "internal_server_error",
+              message: "An unexpected error occurred.",
+            }),
+            { status: 500, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 200 with a truncated body as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response('{"id":"4ef9a417-02e9', {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 429 as an unknown outcome so a retry reuses the same key", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 429,
+              name: "rate_limit_exceeded",
+              message: "Too many requests",
+            }),
+            { status: 429, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it.each([
+    [422, "validation_error"],
+    [403, "invalid_from_address"],
+  ])("reports a %s %s answer as a definite failure", async (status, name) => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({ statusCode: status, name, message: "Rejected" }),
+            { status, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "definite_failure" });
+  });
+
+  it("accepts a 200 with a message id", async () => {
+    const fetchCalls: RequestInit[] = [];
+    await expect(
+      sendThroughRealSdk(async (_url, init) => {
+        fetchCalls.push(init ?? {});
+        return new Response(JSON.stringify({ id: "email-123" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-123",
+      outcome: "accepted",
+    });
+    expect(new Headers(fetchCalls[0]?.headers).get("Idempotency-Key")).toBe(
+      reminder.idempotencyKey,
+    );
+  });
+});
+
+describe("openvpmBrand", () => {
+  it("trims configured email brand env values", async () => {
+    vi.stubEnv("EMAIL_COMPANY_NAME", " Open Vet Ops ");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", " support@example.com ");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", " 123 Clinic Way ");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", " https://app.example.com ");
+    vi.stubEnv("NEXT_PUBLIC_DEMO_URL", " https://demo.example.com/start ");
+    vi.stubEnv("EMAIL_LOGO_URL", " https://cdn.example.com/logo.png ");
+    const { openvpmBrand } = await loadEmailBrand();
+
+    expect(openvpmBrand()).toMatchObject({
+      name: "PETORA INDONESIA",
+      companyName: "Open Vet Ops",
+      supportEmail: "support@example.com",
+      companyAddress: "123 Clinic Way",
+      appUrl: "https://app.example.com",
+      demoUrl: "https://demo.example.com/start",
+      logoUrl: "https://cdn.example.com/logo.png",
+    });
+  });
+
+  it("falls back from blank email brand env values", async () => {
+    vi.stubEnv("EMAIL_COMPANY_NAME", "   ");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "\t");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "\n");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", " ");
+    vi.stubEnv("EMAIL_LOGO_URL", "   ");
+    const { openvpmBrand } = await loadEmailBrand();
+
+    expect(openvpmBrand()).toMatchObject({
+      companyName: "PETORA INDONESIA",
+      appUrl: "http://localhost:3000",
+    });
+    expect(openvpmBrand().supportEmail).toBeUndefined();
+    expect(openvpmBrand().demoUrl).toBe("http://localhost:3000/demo-start");
+    expect(openvpmBrand().companyAddress).toBeUndefined();
+    expect(openvpmBrand().logoUrl).toBeUndefined();
+  });
+});
+
+describe("lifecycle email branding", () => {
+  it("renders setup recovery as a one-click, preference-aware resume", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-setup" } });
+    const { sendSetupRecoveryEmail } = await loadEmail();
+
+    await expect(
+      sendSetupRecoveryEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        stepTitle: "bringing in your clinic records",
+        nextAction: "Start with one small client or patient file.",
+        attemptNumber: 1,
+      }),
+    ).resolves.toEqual({ success: true, id: "email-setup" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      subject: "Resume setup for Neighborhood Veterinary",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("https://app.openvpm.com/?setup=resume");
+    expect(payload.html).toContain("no call or credit card required");
+    expect(payload.html).toContain("do not email patient files");
+    expect(payload.html).toContain("/email-preferences?token=");
+  });
+
+  it("sends checkout recovery as a personal note with signed one-click answers", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    vi.stubEnv("GROWTH_SENDER_REPLY_TO", "alex@openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-checkout" } });
+    const { sendCheckoutRecoveryEmail } = await loadEmail();
+
+    await expect(
+      sendCheckoutRecoveryEmail({
+        to: "owner@example.com",
+        practiceId: "00000000-0000-4000-8000-0000000000aa",
+        practiceName: "Neighborhood Veterinary",
+        adminName: "Sam Rivera",
+        step: 2,
+        idempotencyKey: "lc:checkout-recovery:v1:x:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-checkout" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      from: "Alex at PETORA INDONESIA <hello@mail.openvpm.com>",
+      replyTo: "alex@openvpm.com",
+      subject: "Quick question about Neighborhood Veterinary",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("Hi <!-- -->Sam");
+    expect(payload.html).toContain(
+      "https://app.openvpm.com/feedback/stop-reason?token=",
+    );
+    expect(payload.html).toContain("reason=card");
+    expect(payload.html).toContain("reason=self_host");
+    expect(payload.html).toContain("Alex");
+  });
+
+  function stubGrowthEmailEnv() {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    vi.stubEnv("GROWTH_SENDER_REPLY_TO", "alex@openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-growth" } });
+  }
+
+  it("sends a lapsed-trial win-back with one-click reasons but no card option", async () => {
+    stubGrowthEmailEnv();
+    const { sendTrialWinbackEmail } = await loadEmail();
+
+    await sendTrialWinbackEmail({
+      to: "owner@example.com",
+      practiceId: "00000000-0000-4000-8000-0000000000aa",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      step: 2,
+      usageSummary: null,
+      idempotencyKey: "lc:trial-winback:v1:x:2",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      from: "Alex at PETORA INDONESIA <hello@mail.openvpm.com>",
+      subject: "What didn't work for Neighborhood Veterinary?",
+    });
+    expect(payload.html).toContain("/feedback/stop-reason?token=");
+    expect(payload.html).toContain("reason=price");
+    expect(payload.html).not.toContain("reason=card");
+  });
+
+  it("sends an NPS survey with eleven signed score links", async () => {
+    stubGrowthEmailEnv();
+    const { sendNpsSurveyEmail } = await loadEmail();
+
+    await sendNpsSurveyEmail({
+      to: "owner@example.com",
+      practiceId: "00000000-0000-4000-8000-0000000000aa",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      survey: "nps:1",
+      idempotencyKey: "lc:nps:v1:x:1",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("One quick question about PETORA INDONESIA");
+    const links = payload.html.match(/\/feedback\/nps\?token=[^"]+score=\d+/g);
+    expect(links).toHaveLength(11);
+    expect(payload.html).toContain("score=0");
+    expect(payload.html).toContain("score=10");
+  });
+
+  it("sends adoption tips only for what the clinic has not turned on", async () => {
+    stubGrowthEmailEnv();
+    const { sendAdoptionEmail } = await loadEmail();
+
+    await sendAdoptionEmail({
+      to: "owner@example.com",
+      practiceName: "Neighborhood Veterinary",
+      adminName: null,
+      gaps: ["reminders", "portal"],
+      idempotencyKey: "lc:adoption:v1:x",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe(
+      "Two things worth turning on in Neighborhood Veterinary",
+    );
+    expect(payload.html).toContain("/settings?tab=messaging");
+    expect(payload.html).toContain("The client portal");
+    expect(payload.html).not.toContain("Invite your team");
+  });
+
+  it("sends the team invite nudge with a link to staff settings", async () => {
+    stubGrowthEmailEnv();
+    const { sendTeamInviteNudgeEmail } = await loadEmail();
+
+    await sendTeamInviteNudgeEmail({
+      to: "owner@example.com",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      appointments: 6,
+      idempotencyKey: "lc:team-invite:v1:x",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("Bring your team into Neighborhood Veterinary");
+    expect(payload.html).toContain("6 appointments");
+    expect(payload.html).toContain("/settings?tab=staff");
+  });
+
+  it("sends the build follow-up with a signed link back into the saved build", async () => {
+    stubGrowthEmailEnv();
+    const { sendBuildFollowupEmail } = await loadEmail();
+
+    await sendBuildFollowupEmail({
+      to: "dr.ray@harborview.test",
+      leadId: "00000000-0000-4000-8000-0000000000aa",
+      step: 1,
+      state: {
+        practiceType: "companion",
+        currentSystem: "avimark",
+        clinicName: "Harbor View Animal Clinic",
+        brandColor: "#e8590c",
+        services: [],
+      },
+      anonymousId: "11111111-1111-4111-8111-111111111111",
+      idempotencyKey: "lead:build-followup:v1:x:1",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("Harbor View Animal Clinic is saved");
+    expect(payload.html).toContain("https://app.openvpm.com/start?resume=");
+    expect(payload.html).toContain("utm_campaign=build_followup_1");
+    expect(payload.html).toContain("funnel_id=11111111-1111-4111-8111-111111111111");
+    expect(payload.html).toContain("#e8590c");
+  });
+
+  it("sends demo follow-up with tool copy and attributed signup links", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-demo" } });
+    const { sendDemoFollowupEmail } = await loadEmail();
+
+    await expect(
+      sendDemoFollowupEmail({
+        to: "vet@clinic.com",
+        step: 2,
+        topTool: "day_board",
+        anonymousId: "11111111-1111-4111-8111-111111111111",
+        idempotencyKey: "lead:demo-followup:v1:x:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-demo" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "vet@clinic.com",
+      from: "Alex at PETORA INDONESIA <hello@mail.openvpm.com>",
+      subject: "The day board, with your own clinic",
+      headers: {
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("which room each patient is in");
+    expect(payload.html).toContain("utm_campaign=demo_followup_2");
+    expect(payload.html).toContain(
+      "funnel_id=11111111-1111-4111-8111-111111111111",
+    );
+    expect(payload.html).toContain("you tried the PETORA INDONESIA demo");
+  });
+
+  it("uses a signed human link and RFC one-click headers for trial email", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendTrialEndingEmail } = await loadEmail();
+
+    await expect(
+      sendTrialEndingEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+        billingConnected: true,
+        idempotencyKey: "lc:trial-ending:practice:t-3",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [payload, providerOptions] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.headers).toMatchObject({
+      "List-Unsubscribe": expect.stringMatching(
+        /^<https:\/\/app\.openvpm\.com\/api\/email-preferences\/unsubscribe\?token=.+>$/,
+      ),
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    });
+    expect(payload.html).toContain("/email-preferences?token=");
+    expect(payload.html).toContain(
+      "This address is the PETORA INDONESIA billing contact for Neighborhood Veterinary.",
+    );
+    expect(payload.html).toContain("Review billing");
+    expect(payload.html).toContain("no need to add it again");
+    expect(payload.html).not.toContain(">Add billing<");
+    expect(providerOptions).toMatchObject({
+      idempotencyKey: "lc:trial-ending:practice:t-3",
+    });
+    expect(payload.html).not.toContain(
+      'href="https://app.openvpm.com/settings?tab=billing">Manage email preferences',
+    );
+  });
+
+  it("sends the PHI-free first-clinic-win campaign with provider idempotency", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-first-win" } });
+    const { sendFirstClinicWinEmail } = await loadEmail();
+
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 28, 2026",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-first-win" });
+
+    const [payload, providerOptions] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      subject: "Your first real PETORA INDONESIA visit is complete",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(providerOptions).toMatchObject({
+      idempotencyKey: "lc:first-clinic-win:v1:practice",
+    });
+    expect(payload.html).toContain("You ran your first real visit");
+    expect(payload.html).toContain("A card is not required");
+    expect(payload.html).not.toMatch(/patient|client name|invoice amount/i);
+  });
+
+  it("does not send optional mail without a dedicated preference secret", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_SIGNING_SECRET", " ");
+    const { sendTrialEndingEmail } = await loadEmail();
+
+    await expect(
+      sendTrialEndingEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 12, 2026",
+      }),
+    ).resolves.toEqual({
+      success: false,
+      error: "Email preference signing is not configured.",
+    });
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("uses the normalized brand support email as lifecycle reply-to", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", " support@example.com ");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendWelcomeEmail } = await loadEmail();
+
+    await expect(
+      sendWelcomeEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialDays: 14,
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        replyTo: "support@example.com",
+        to: "owner@example.com",
+        headers: {
+          "List-Unsubscribe": expect.stringContaining(
+            "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+          ),
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      }),
+    );
+    expect(payload.html).toContain("/email-preferences?token=");
+    expect(payload.html).toContain("because you created a PETORA INDONESIA account");
+  });
+
+  it("omits a blank support contact from lifecycle replies", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_SUPPORT_ADDRESS", "   ");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-1" } });
+    const { sendPaymentReceiptEmail } = await loadEmail();
+
+    await expect(
+      sendPaymentReceiptEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        amount: "$79.00",
+        periodLabel: "July 2026",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-1" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        to: "owner@example.com",
+      }),
+    );
+    expect(payload).not.toHaveProperty("replyTo");
+    expect(payload.html).not.toContain("petora-indonesia.local");
+  });
+});

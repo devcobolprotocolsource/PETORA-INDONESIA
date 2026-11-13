@@ -41,6 +41,8 @@ Agent akan meng-clone `https://github.com/evangauer/openvpm.git` sebagai fondasi
 | **Stok** | Standar | Wajib **FEFO** (First Expired First Out) dengan batch tracking |
 | **Rekam Medis** | Standar | Wajib **Berversi & Terkunci** (Addendum only) |
 
+**Ketentuan lisensi fondasi:** OpenVPM menggunakan AGPL-3.0. PETORA mengadopsi fondasi ini dengan persetujuan pemilik proyek; pertahankan teks lisensi dan pemberitahuan hak cipta upstream, serta lisensikan kode turunan sesuai AGPL-3.0. Hak atas merek PETORA terpisah dari hak cipta kode upstream.
+
 ---
 
 ## 4. Peta Jalan Pengembangan (Fase Eksekusi)

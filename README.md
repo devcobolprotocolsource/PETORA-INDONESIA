@@ -292,8 +292,9 @@ Pusat kendali bagi pemilik dan Super Admin:
 
 - Pemilik bebas mengganti nama aplikasi, logo, dan warna dengan identitas petshop dan klinik sendiri.
 - Atribusi "Powered by PETORA INDONESIA" beserta pernyataan hak cipta dan lisensi selalu tampil di aplikasi staf, aplikasi pelanggan, dan dokumen cetak. Tidak ada pengaturan untuk menyembunyikannya.
-- Tidak ada kunci lisensi atau aktivasi online. Perlindungan branding berbasis perjanjian lisensi yang disertakan bersama sistem.
-- Seluruh kode sumber disediakan kepada pelanggan.
+- Kode sumber dilisensikan di bawah AGPL-3.0; pemberitahuan hak cipta dan atribusi upstream tetap dipertahankan.
+- Identitas merek PETORA INDONESIA terpisah dari hak cipta kode dan tidak mengubah ketentuan lisensi perangkat lunak.
+- Tidak ada kunci lisensi atau aktivasi online.
 
 12. Keamanan dan Privasi
 
@@ -484,27 +485,31 @@ Teknologi yang Digunakan
 
 - TypeScript dan Next.js App Router
 - PostgreSQL dengan Drizzle ORM
-- pg-boss untuk antrean berbasis PostgreSQL
-- Docker Compose; Caddy direncanakan untuk HTTPS otomatis pada deployment produksi
-- Vitest untuk tes otomatis
+- pnpm dan Turborepo untuk monorepo
+- Docker Compose dengan PostgreSQL dan penyimpanan objek kompatibel S3
+- Vitest untuk tes unit dan Playwright untuk tes end-to-end
+- Strategi antrean pekerjaan dan HTTPS produksi belum ditetapkan untuk PETORA
 
 Memulai Pengembangan
 
-Prasyarat: Node.js 24, npm, dan PostgreSQL. Jika Anda menjalankan aplikasi lokal dengan konfigurasi default di repository, DATABASE_URL dan TEST_DATABASE_URL akan otomatis memakai nilai Compose lokal yang telah disiapkan; Anda tetap bisa menimpanya lewat environment.
+Prasyarat: Node.js 24, pnpm 9, dan Docker Compose. Versi Node dapat diikuti dari `.nvmrc`.
 
-npm ci  
-npm run dev
+Pasang dependensi dan siapkan konfigurasi lokal:
 
-Untuk menyiapkan PostgreSQL dan aplikasi melalui Docker:
+```sh
+pnpm install --frozen-lockfile
+cp .env.example .env
+```
 
-docker compose up --build
+Isi `NEXTAUTH_SECRET` di `.env` dengan secret acak sebelum menjalankan aplikasi. Untuk menjalankan aplikasi, PostgreSQL, dan penyimpanan objek melalui Docker Compose:
 
-Jalankan npm run verify terhadap basis data tes terpisah. Untuk PostgreSQL tes lokal melalui Compose:
+```sh
+docker compose --env-file .env -f docker/docker-compose.yml up --build
+```
 
-docker compose --profile test up -d db-test  
-TEST_DATABASE_URL=postgresql://petora:petora_test@localhost:5433/petora_test npm run verify
+Untuk pengembangan aplikasi dari host, jalankan layanan dependensi terlebih dahulu, lalu `pnpm dev`. Perintah test tersedia melalui `pnpm test` dan `pnpm test:e2e`; tes integrasi basis data memerlukan PostgreSQL khusus tes.
 
-Variabel TEST_DATABASE_URL wajib menunjuk ke basis data yang namanya berakhiran _test; migrasi tes menolak nama lain. Konfigurasi dan kredensial pada compose.yaml hanya untuk pengembangan lokal; jangan gunakan untuk produksi. Panduan instalasi produksi satu perintah akan disediakan setelah alur deployment dibangun dan diuji.
+Konfigurasi dan kredensial pada Compose hanya untuk pengembangan lokal; jangan gunakan untuk produksi. Panduan instalasi produksi satu perintah akan disediakan setelah alur deployment PETORA dibangun dan diuji.
 
 Kunci autentikasi dua langkah
 
@@ -517,4 +522,4 @@ Untuk mengaktifkan pemeriksaan alamat publik di wizard, atur PUBLIC_APP_URL ke o
 
 ---
 
-PETORA INDONESIA. Hak cipta dan lisensi dipegang oleh PETORA INDONESIA.
+PETORA INDONESIA. Perangkat lunak ini dilisensikan di bawah AGPL-3.0; pemberitahuan hak cipta dan atribusi upstream tetap berlaku.
