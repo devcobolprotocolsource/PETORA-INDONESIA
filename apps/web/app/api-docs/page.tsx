@@ -533,6 +533,7 @@ const sections: Section[] = [
         input: `{
   clientId: string,
   patientId?: string,
+  locationId?: string,
   isEstimate?: boolean,
   items: {
     serviceId?: string,

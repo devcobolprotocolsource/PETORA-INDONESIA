@@ -74,6 +74,24 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("adds invoice branch identity and backfills only tenant-matched appointments", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0120_square_leech.sql",
+    );
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ tag?: string }> };
+
+    expect(migration).toContain('ADD COLUMN "location_id" uuid');
+    expect(migration).toContain('invoice."practice_id" = appointment."practice_id"');
+    expect(migration).toContain('invoice."appointment_id" = appointment."id"');
+    expect(migration).toContain("invoices_location_tenant_fk");
+    expect(migration).toContain("invoices_location_idx");
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0120_square_leech",
+    );
+  });
+
   it("expands consent credentials to digests without invalidating live legacy links", () => {
     const migration = readRepoFile(
       "packages/db/drizzle/0102_curved_guardian.sql",

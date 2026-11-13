@@ -166,6 +166,7 @@ export const invoices = pgTable(
       .references(() => clients.id),
     patientId: uuid("patient_id").references(() => patients.id),
     appointmentId: uuid("appointment_id").references(() => appointments.id),
+    locationId: uuid("location_id"),
     status: invoiceStatusEnum("status").notNull().default("draft"),
     subtotal: numeric("subtotal", { precision: 10, scale: 2 })
       .notNull()
@@ -203,6 +204,12 @@ export const invoices = pgTable(
       table.isEstimate,
       table.status
     ),
+    locationIdx: index("invoices_location_idx").on(
+      table.practiceId,
+      table.locationId,
+      table.deletedAt,
+      table.createdAt
+    ),
     activeAppointmentUq: uniqueIndex("invoices_active_appointment_uq")
       .on(table.practiceId, table.appointmentId)
       .where(
@@ -220,6 +227,11 @@ export const invoices = pgTable(
       table.practiceId,
       table.id
     ),
+    locationTenantFk: foreignKey({
+      columns: [table.practiceId, table.locationId],
+      foreignColumns: [locations.practiceId, locations.id],
+      name: "invoices_location_tenant_fk",
+    }),
   })
 );
 
@@ -505,6 +517,10 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
   appointment: one(appointments, {
     fields: [invoices.appointmentId],
     references: [appointments.id],
+  }),
+  location: one(locations, {
+    fields: [invoices.locationId],
+    references: [locations.id],
   }),
   items: many(invoiceItems),
   payments: many(payments),

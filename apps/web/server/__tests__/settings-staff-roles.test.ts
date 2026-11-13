@@ -11,7 +11,16 @@ function createDb(selectResults: unknown[][]) {
     const query: Record<string, ReturnType<typeof vi.fn>> = {};
     query.innerJoin = vi.fn(() => query);
     query.leftJoin = vi.fn(() => query);
-    query.where = vi.fn(async () => remaining.shift() ?? []);
+    query.where = vi.fn(() => {
+      const result = remaining.shift() ?? [];
+      return {
+        orderBy: vi.fn(async () => result),
+        then: (
+          resolve: (value: unknown[]) => unknown,
+          reject?: (error: unknown) => unknown,
+        ) => Promise.resolve(result).then(resolve, reject),
+      };
+    });
     return { from: vi.fn(() => query) };
   });
   const insert = vi.fn();
@@ -79,5 +88,18 @@ describe("settings staff role management", () => {
     await expect(callerWithDb(db).getStaffPermissionCatalog()).resolves.toEqual([
       expect.objectContaining({ key: "staff.roles.manage" }),
     ]);
+  });
+
+  it("lists only active locations for role assignment scopes", async () => {
+    const location = {
+      id: "00000000-0000-0000-0000-00000000000b",
+      name: "Central",
+      isPrimary: true,
+    };
+    const { db } = createDb([[roleManagerPermissionRow()], [location]]);
+
+    await expect(
+      callerWithDb(db).listStaffRoleLocations(),
+    ).resolves.toEqual([location]);
   });
 });

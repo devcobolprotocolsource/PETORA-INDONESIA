@@ -37,9 +37,16 @@ export function StaffRoleManager() {
   const staff = trpc.settings.listAssignableStaff.useQuery(undefined, {
     enabled: canManage,
   });
+  const locations = trpc.settings.listStaffRoleLocations.useQuery(undefined, {
+    enabled: canManage,
+  });
   const [form, setForm] = useState<RoleForm>(emptyRoleForm);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [assignment, setAssignment] = useState({ userId: "", roleId: "" });
+  const [assignment, setAssignment] = useState({
+    userId: "",
+    roleId: "",
+    locationId: "",
+  });
 
   const refresh = () => {
     void utils.settings.listStaffRoles.invalidate();
@@ -69,7 +76,7 @@ export function StaffRoleManager() {
   const assignRole = trpc.settings.assignStaffRole.useMutation({
     onSuccess: () => {
       refresh();
-      setAssignment({ userId: "", roleId: "" });
+      setAssignment({ userId: "", roleId: "", locationId: "" });
       toast.success("Role assigned");
     },
     onError: (error) => toast.error(error.message),
@@ -104,8 +111,13 @@ export function StaffRoleManager() {
     return null;
   }
 
-  const loading = roles.isLoading || assignments.isLoading || staff.isLoading;
-  const error = roles.error ?? assignments.error ?? staff.error;
+  const loading =
+    roles.isLoading ||
+    assignments.isLoading ||
+    staff.isLoading ||
+    locations.isLoading;
+  const error =
+    roles.error ?? assignments.error ?? staff.error ?? locations.error;
   if (loading) {
     return (
       <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
@@ -127,6 +139,7 @@ export function StaffRoleManager() {
   const roleList = roles.data ?? [];
   const assignmentList = assignments.data ?? [];
   const staffList = staff.data ?? [];
+  const locationList = locations.data ?? [];
   const defaultUserId = staffList[0]?.id ?? "";
   const defaultRoleId = roleList[0]?.id ?? "";
   const selectedUserId = assignment.userId || defaultUserId;
@@ -167,8 +180,8 @@ export function StaffRoleManager() {
         <div>
           <h3 className="text-sm font-semibold">Custom staff roles</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Create practice-wide roles and assign only permissions available to
-            your account.
+            Create roles and assign them to the whole practice or a specific
+            branch. You can only grant permissions available to your account.
           </p>
         </div>
       </div>
@@ -359,6 +372,25 @@ export function StaffRoleManager() {
                     </option>
                   ))}
                 </select>
+                <select
+                  aria-label="Branch scope"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={assignment.locationId}
+                  onChange={(event) =>
+                    setAssignment({
+                      ...assignment,
+                      locationId: event.target.value,
+                    })
+                  }
+                >
+                  <option value="">All branches</option>
+                  {locationList.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                      {location.isPrimary ? " (Primary)" : ""}
+                    </option>
+                  ))}
+                </select>
                 <Button
                   size="sm"
                   disabled={
@@ -370,6 +402,7 @@ export function StaffRoleManager() {
                     assignRole.mutate({
                       userId: selectedUserId,
                       roleId: selectedRoleId,
+                      locationId: assignment.locationId || null,
                     })
                   }
                 >

@@ -2,10 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadStaffLocationScope: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/authorization/staff-permissions", () => ({
+  loadStaffLocationScope: mocks.loadStaffLocationScope,
 }));
 
 const { billingRouter } = await import("../routers/billing");
@@ -141,9 +146,36 @@ const productLine = {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.loadStaffLocationScope.mockResolvedValue({ kind: "practice" });
 });
 
 describe("billing invoice integrity", () => {
+  it("rejects creating an invoice for a branch outside the caller's assignment", async () => {
+    const assignedLocationId = "00000000-0000-0000-0000-000000000010";
+    const requestedLocationId = "00000000-0000-0000-0000-000000000011";
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: CLIENT_ID }],
+        [{ taxRatePercent: "8.00" }],
+        [{ id: requestedLocationId, isPrimary: true }],
+        [{ locationId: requestedLocationId }],
+      ],
+    });
+    mocks.loadStaffLocationScope.mockResolvedValueOnce({
+      kind: "branches",
+      locationIds: [assignedLocationId],
+    });
+
+    await expect(
+      callerWithDb(db).createInvoice({
+        clientId: CLIENT_ID,
+        locationId: requestedLocationId,
+        items: [],
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("keeps estimate conversion restricted to billing manager roles", async () => {
     const { db, select, updateSet, insertValues } = createDb({
       selectResults: [],

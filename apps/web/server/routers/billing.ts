@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   eq,
   and,
+  asc,
   isNull,
   isNotNull,
   desc,
@@ -87,6 +88,7 @@ import {
   practicePaymentAccounts,
   users,
   practices,
+  locations,
   appointments,
   prescriptions,
   visitCloseouts,
@@ -106,6 +108,7 @@ import {
   assertVisitReconciliationMutable,
   markCompletedVisitCloseoutPaid,
 } from "../visit-billing-integrity";
+import { loadStaffLocationScope } from "@/lib/authorization/staff-permissions";
 
 type BillingDb = Pick<
   Database,
@@ -349,6 +352,7 @@ const createInvoiceInput = z
     clientId: z.string().guid(),
     patientId: z.string().guid().optional(),
     appointmentId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     items: z
       .array(invoiceLineInput)
       .max(
@@ -410,6 +414,103 @@ type InvoiceLineInput = {
 
 function activePracticeWhere(practiceId: string) {
   return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
+}
+
+async function resolveInvoiceLocationId(
+  db: Database,
+  practiceId: string,
+  userId: string,
+  appointmentLocationId?: string | null,
+  requestedLocationId?: string,
+): Promise<string | null> {
+  if (
+    requestedLocationId &&
+    appointmentLocationId &&
+    requestedLocationId !== appointmentLocationId
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "The invoice location must match the appointment location.",
+    });
+  }
+
+  const locationScope = await loadStaffLocationScope(db, practiceId, userId);
+  if (
+    !requestedLocationId &&
+    !appointmentLocationId &&
+    locationScope.kind === "practice"
+  ) {
+    return null;
+  }
+  const activeLocations = await db
+    .select({ id: locations.id, isPrimary: locations.isPrimary })
+    .from(locations)
+    .where(
+      and(
+        eq(locations.practiceId, practiceId),
+        isNull(locations.deletedAt),
+      ),
+    )
+    .orderBy(desc(locations.isPrimary), asc(locations.name));
+  const allowedLocations =
+    locationScope.kind === "practice"
+      ? activeLocations
+      : activeLocations.filter(({ id }) =>
+          locationScope.locationIds.includes(id),
+        );
+  if (allowedLocations.length === 0) {
+    if (locationScope.kind === "branches") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "No active branch is assigned to your role.",
+      });
+    }
+    if (requestedLocationId || appointmentLocationId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "The selected invoice branch is unavailable.",
+      });
+    }
+    return null;
+  }
+
+  const [user] = await db
+    .select({ locationId: users.locationId })
+    .from(users)
+    .where(and(eq(users.id, userId), eq(users.practiceId, practiceId)))
+    .limit(1);
+  const defaultLocationId =
+    user?.locationId &&
+    allowedLocations.some(({ id }) => id === user.locationId)
+      ? user.locationId
+      : undefined;
+  const locationId =
+    requestedLocationId ??
+    appointmentLocationId ??
+    defaultLocationId ??
+    (allowedLocations.length === 1
+      ? allowedLocations[0]!.id
+      : allowedLocations.find(({ isPrimary }) => isPrimary)?.id);
+
+  if (!locationId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Select a branch for this invoice.",
+    });
+  }
+  if (!allowedLocations.some(({ id }) => id === locationId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You do not have access to the selected invoice branch.",
+    });
+  }
+  if (appointmentLocationId && appointmentLocationId !== locationId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "The invoice location must match the appointment location.",
+    });
+  }
+  return locationId;
 }
 
 function practiceNotFound(): TRPCError {
@@ -856,7 +957,10 @@ async function assertAppointmentBelongsToClientPatient(
   }
 
   const [appointment] = await ctx.db
-    .select({ id: appointments.id })
+    .select({
+      id: appointments.id,
+      locationId: appointments.locationId,
+    })
     .from(appointments)
     .where(and(...conditions))
     .limit(1);
@@ -1925,24 +2029,68 @@ export const billingRouter = createRouter({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const result = await ctx.db.transaction(async (tx) => {
-        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
-        const [sourceIdentity] = await tx
-          .select({ appointmentId: dispenseChargeQueue.appointmentId })
-          .from(dispenseChargeQueue)
-          .where(
-            and(
-              eq(dispenseChargeQueue.id, input.id),
-              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
-            ),
-          )
-          .limit(1);
-        if (!sourceIdentity) {
+      const [sourceIdentity] = await ctx.db
+        .select({
+          appointmentId: dispenseChargeQueue.appointmentId,
+          locationId: locations.id,
+        })
+        .from(dispenseChargeQueue)
+        .leftJoin(
+          appointments,
+          and(
+            eq(appointments.id, dispenseChargeQueue.appointmentId),
+            eq(appointments.practiceId, ctx.practiceId),
+          ),
+        )
+        .leftJoin(
+          locations,
+          and(
+            eq(locations.id, appointments.locationId),
+            eq(locations.practiceId, ctx.practiceId),
+            isNull(locations.deletedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(dispenseChargeQueue.id, input.id),
+            eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+          ),
+        )
+        .limit(1);
+      if (!sourceIdentity) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Medication dispense not found.",
+        });
+      }
+      const locationScope = await loadStaffLocationScope(
+        ctx.db,
+        ctx.practiceId,
+        ctx.user.id,
+      );
+      let invoiceLocationId = sourceIdentity.locationId;
+      if (locationScope.kind === "branches") {
+        if (
+          invoiceLocationId &&
+          !locationScope.locationIds.includes(invoiceLocationId)
+        ) {
           throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "Medication dispense not found.",
+            code: "FORBIDDEN",
+            message: "You do not have access to this dispense branch.",
           });
         }
+        if (!invoiceLocationId && locationScope.locationIds.length === 1) {
+          invoiceLocationId = locationScope.locationIds[0]!;
+        }
+        if (!invoiceLocationId) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Select a branch before invoicing this dispense.",
+          });
+        }
+      }
+      const result = await ctx.db.transaction(async (tx) => {
+        const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
         if (sourceIdentity.appointmentId) {
           // Match createInvoice's lock order: appointment first, then the
           // dispense row. This prevents duplicate visit invoices and avoids a
@@ -1970,6 +2118,13 @@ export const billingRouter = createRouter({
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Medication dispense not found.",
+          });
+        }
+        if (source.appointmentId !== sourceIdentity.appointmentId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "Medication dispense changed branches. Refresh and try again.",
           });
         }
         if (source.status === "invoiced" && source.invoiceId) {
@@ -2028,6 +2183,7 @@ export const billingRouter = createRouter({
                 id: invoices.id,
                 clientId: invoices.clientId,
                 patientId: invoices.patientId,
+                locationId: invoices.locationId,
                 status: invoices.status,
                 subtotal: invoices.subtotal,
                 paidAmount: invoices.paidAmount,
@@ -2054,6 +2210,17 @@ export const billingRouter = createRouter({
               code: "PRECONDITION_FAILED",
               message:
                 "The visit invoice no longer matches this medication dispense.",
+            });
+          }
+          if (
+            existingVisitInvoice.locationId &&
+            invoiceLocationId &&
+            existingVisitInvoice.locationId !== invoiceLocationId
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "The visit invoice is assigned to a different branch than this medication dispense.",
             });
           }
           if (
@@ -2092,6 +2259,8 @@ export const billingRouter = createRouter({
               subtotal: centsToMoney(totals.subtotalCents),
               tax: centsToMoney(totals.taxCents),
               total: centsToMoney(totals.totalCents),
+              locationId:
+                invoiceLocationId ?? existingVisitInvoice.locationId,
               updatedAt: new Date(),
             })
             .where(
@@ -2123,6 +2292,7 @@ export const billingRouter = createRouter({
               clientId: source.clientId,
               patientId: source.patientId,
               appointmentId: source.appointmentId,
+              locationId: invoiceLocationId,
               status: "draft",
               subtotal: centsToMoney(totals.subtotalCents),
               tax: centsToMoney(totals.taxCents),
@@ -2404,6 +2574,7 @@ export const billingRouter = createRouter({
         isEstimate: z.boolean().optional(),
         patientId: z.string().guid().optional(),
         appointmentId: z.string().guid().optional(),
+        locationId: z.string().guid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
       })
@@ -2413,6 +2584,46 @@ export const billingRouter = createRouter({
         eq(invoices.practiceId, ctx.practiceId),
         isNull(invoices.deletedAt),
       ];
+      const locationScope = await loadStaffLocationScope(
+        ctx.db,
+        ctx.practiceId,
+        ctx.user.id,
+      );
+      if (input.locationId) {
+        const [location] = await ctx.db
+          .select({ id: locations.id })
+          .from(locations)
+          .where(
+            and(
+              eq(locations.id, input.locationId),
+              eq(locations.practiceId, ctx.practiceId),
+              isNull(locations.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!location) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The selected invoice branch is unavailable.",
+          });
+        }
+        if (
+          locationScope.kind === "branches" &&
+          !locationScope.locationIds.includes(input.locationId)
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You do not have access to the selected invoice branch.",
+          });
+        }
+        conditions.push(eq(invoices.locationId, input.locationId));
+      } else if (locationScope.kind === "branches") {
+        conditions.push(
+          locationScope.locationIds.length > 0
+            ? inArray(invoices.locationId, locationScope.locationIds)
+            : sql`false`,
+        );
+      }
 
       if (input.status) {
         conditions.push(eq(invoices.status, input.status));
@@ -2449,6 +2660,7 @@ export const billingRouter = createRouter({
             createdAt: invoices.createdAt,
             updatedAt: invoices.updatedAt,
             isEstimate: invoices.isEstimate,
+            locationId: invoices.locationId,
             clientFirstName: clients.firstName,
             clientLastName: clients.lastName,
             patientName: patients.name,
@@ -2491,6 +2703,23 @@ export const billingRouter = createRouter({
   getInvoice: protectedProcedure
     .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
+      const locationScope = await loadStaffLocationScope(
+        ctx.db,
+        ctx.practiceId,
+        ctx.user.id,
+      );
+      const invoiceConditions = [
+        eq(invoices.id, input.id),
+        eq(invoices.practiceId, ctx.practiceId),
+        isNull(invoices.deletedAt),
+      ];
+      if (locationScope.kind === "branches") {
+        invoiceConditions.push(
+          locationScope.locationIds.length > 0
+            ? inArray(invoices.locationId, locationScope.locationIds)
+            : sql`false`,
+        );
+      }
       const [invoice] = await ctx.db
         .select({
           id: invoices.id,
@@ -2501,6 +2730,7 @@ export const billingRouter = createRouter({
           total: invoices.total,
           paidAmount: invoices.paidAmount,
           appointmentId: invoices.appointmentId,
+          locationId: invoices.locationId,
           dueDate: invoices.dueDate,
           createdAt: invoices.createdAt,
           updatedAt: invoices.updatedAt,
@@ -2528,11 +2758,7 @@ export const billingRouter = createRouter({
           )
         )
         .where(
-          and(
-            eq(invoices.id, input.id),
-            eq(invoices.practiceId, ctx.practiceId),
-            isNull(invoices.deletedAt)
-          )
+          and(...invoiceConditions)
         )
         .limit(1);
 
@@ -2840,13 +3066,15 @@ export const billingRouter = createRouter({
       if (input.patientId) {
         await assertPatientBelongsToClient(ctx, input.patientId, input.clientId);
       }
+      let appointmentLocationId: string | null | undefined;
       if (input.appointmentId) {
-        await assertAppointmentBelongsToClientPatient(
+        const appointment = await assertAppointmentBelongsToClientPatient(
           ctx,
           input.appointmentId,
           input.clientId,
           input.patientId
         );
+        appointmentLocationId = appointment.locationId;
       }
       // Tax rate is configured per practice (region-aware), not hardcoded.
       const [practice] = await ctx.db
@@ -2857,6 +3085,13 @@ export const billingRouter = createRouter({
       if (!practice) {
         throw practiceNotFound();
       }
+      const locationId = await resolveInvoiceLocationId(
+        ctx.db,
+        ctx.practiceId,
+        ctx.user.id,
+        appointmentLocationId,
+        input.locationId,
+      );
 
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
@@ -2929,6 +3164,7 @@ export const billingRouter = createRouter({
             clientId: input.clientId,
             patientId: input.patientId ?? null,
             appointmentId: input.appointmentId ?? null,
+            locationId,
             status: "draft",
             subtotal: centsToMoney(totals.subtotalCents),
             tax: centsToMoney(totals.taxCents),

@@ -84,4 +84,22 @@ describe("billing query scoping", () => {
       source.match(/adjustmentPracticeScope\(ctx\)/g)?.length
     ).toBeGreaterThanOrEqual(2);
   });
+
+  it("limits invoice reads to the staff member's assigned branches", () => {
+    const listInvoicesBlock = source.slice(
+      source.indexOf("listInvoices: protectedProcedure"),
+      source.indexOf("getInvoice: protectedProcedure"),
+    );
+    const getInvoiceBlock = source.slice(
+      source.indexOf("getInvoice: protectedProcedure"),
+      source.indexOf("searchInvoices:", source.indexOf("getInvoice: protectedProcedure")),
+    );
+
+    expect(listInvoicesBlock).toContain("loadStaffLocationScope");
+    expect(listInvoicesBlock).toContain(
+      "inArray(invoices.locationId, locationScope.locationIds)",
+    );
+    expect(listInvoicesBlock).toContain("locationId: invoices.locationId");
+    expect(getInvoiceBlock).toContain("inArray(invoices.locationId, locationScope.locationIds)");
+  });
 });

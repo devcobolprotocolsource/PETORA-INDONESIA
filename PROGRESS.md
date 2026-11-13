@@ -23,21 +23,23 @@
 - Menambahkan skema role, permission, dan penugasan role per cabang; migrasi membackfill role lama dan mengaktifkan RLS untuk tabel baru.
 - Menambahkan katalog permission dinamis, guard awal `requirePermission`, dan endpoint tenant-scoped untuk membuat, mengubah, menghapus role, serta melihat/mengelola assignment staf.
 - Membatasi pendelegasian permission pada permission yang dimiliki pemanggil; role admin legacy tidak dapat dimasukkan ke mode custom role selama migrasi.
-- Menambahkan panel role kustom pada tab Staff untuk role manager yang berwenang; assignment dari UI saat ini hanya practice-wide.
+- Menambahkan panel role kustom pada tab Staff untuk role manager yang berwenang.
+- Menambahkan pilihan scope "All branches" atau cabang aktif saat menetapkan role kustom; daftar cabang tenant-scoped tersedia untuk role manager.
 - Memigrasikan seluruh router controlled-substance ke `controlled_substances.manage`; hak legacy admin dan dokter hewan dipertahankan, dan akses UI/sidebar mengikuti permission server.
 - Memigrasikan operasi mutasi appointment ke tiga permission granular (`appointments.schedule.manage`, `appointments.clinical.manage`, `appointments.operations.manage`) dengan matriks akses role legacy yang dipertahankan; endpoint admin-only tetap memakai guard admin.
 - Membatasi pembacaan appointment, riwayat pasien, ruang, dokter, lokasi, dan slot berdasarkan cabang role kustom; pembuatan, kunjungan lapangan, reschedule, perubahan status, attach patient, dan penghapusan memeriksa permission cabang.
 - Menambahkan composite foreign key yang memastikan lokasi pada staf, produk, konfigurasi pesan lokasi, dan suppression SMS berasal dari praktik yang sama; migrasi menolak data legacy lintas-praktik alih-alih mengubahnya diam-diam.
+- Menambahkan `location_id` pada invoice, backfill hanya dari appointment dalam praktik yang sama, pilihan cabang pada formulir invoice, dan pembatasan daftar/detail invoice untuk assignment cabang; invoice historis tanpa appointment tetap tidak diberi cabang tebakan.
 - Tes RBAC, migrasi, dan keselamatan pengelolaan staf terpilih lulus (159 tes pada 5 berkas); lint berkas RBAC/UI yang terfokus lulus.
 
 ## Berikutnya
 
 - Migrasikan guard server lain dari role enum ke permission dinamis secara bertahap; masih ada 111 pemakaian `requireRole` pada 30 router.
 - Lengkapi enforcement cabang pada pembatalan recurring series; operasi lainnya yang menunjuk appointment ID kini memeriksa lokasi efektif dan izin cabang.
-- Terapkan filter cabang pada modul operasional lain dengan uji lintas-cabang; role assignment bercabang belum boleh dianggap sebagai isolasi data bisnis di modul yang belum dimigrasikan.
+- Lengkapi enforcement cabang pada seluruh aksi kasir, pembayaran/refund, antrean dispense, laporan, dan UI invoice; daftar/detail dan penetapan lokasi invoice sudah memiliki fondasi, tetapi belum seluruh operasi billing memakai permission dinamis.
 - Pindahkan saldo dan reorder point stok dari satu saldo produk praktik ke saldo per cabang/gudang; `products.stockQuantity` saat ini masih satu saldo bersama.
-- Tambahkan `location_id` pada alur operasional yang belum memilikinya (termasuk waitlist, kasir, dan laporan) setelah skema stok dan kebijakan akses ditetapkan.
-- Perluas UI assignment ke cabang setelah enforcement lintas-cabang siap dan diuji.
+- Tambahkan `location_id` pada alur operasional lain yang belum memilikinya (termasuk waitlist dan laporan), serta selaraskan pengurangan/pemulihan stok dengan lokasi invoice.
+- Uji alur UI assignment cabang end-to-end dengan akun manager dan beberapa lokasi sebelum rilis.
 - Ganti URL deployment/demo dan domain pengirim email upstream setelah domain resmi PETORA tersedia.
 - Validasi ulang kebijakan hukum, kontak, dan klaim layanan hosted untuk yurisdiksi/entitas PETORA sebelum dipublikasikan.
 - Selesaikan pilihan antrean dan strategi deployment produksi sebelum mengimplementasikannya.
@@ -58,6 +60,7 @@
 - Pemeriksaan izin masih memakai `requireRole` legacy di 111 titik pada 30 router; role kustom hanya efektif pada endpoint yang sudah memakai permission guard.
 - Tes migrasi controlled-substance dan permission terpilih lulus (60 tes pada 5 berkas); lint terarah router, helper, tes, halaman, dan sidebar lulus.
 - Tes migrasi database terpilih lulus (78 tes); `db:generate` menyatakan skema dan migration journal sinkron. Type-check paket DB dihentikan lingkungan dengan exit code 143 pada percobaan ulang.
-- Validasi appointment dan branch-scope terbaru lulus (106 tes pada 4 berkas) dan lint terarah tanpa error. Type-check web untuk perubahan terakhir belum berhasil dijalankan; percobaan sebelumnya dihentikan lingkungan dengan SIGTERM.
+- Validasi RBAC, assignment cabang, dan appointment terbaru lulus (109 tes pada 5 berkas); lint terarah tanpa error, dengan lima warning lama pada test mock tRPC. Type-check web dihentikan lingkungan dengan SIGTERM dan belum mencakup perubahan UI assignment cabang terakhir.
+- Validasi penambahan cabang invoice lulus (158 tes pada 5 berkas, 1 tes dilewati); type-check paket DB dihentikan lingkungan dengan exit code 143, dan lint billing masih melaporkan error yang sudah ada pada file terkait.
 - Lint terarah untuk implementasi RBAC lulus. Lint halaman settings penuh masih menemukan dua error yang sudah ada di area lain halaman (`react/no-unescaped-entities`, `no-explicit-any`) dan satu warning hook dependency; tidak diubah karena di luar cakupan.
 - Kesesuaian implementasi fondasi dengan aturan bisnis PETORA belum diaudit menyeluruh.

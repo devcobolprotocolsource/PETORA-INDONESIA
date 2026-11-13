@@ -2211,6 +2211,28 @@ export const settingsRouter = createRouter({
       );
   }),
 
+  listStaffRoleLocations: staffRoleAdminProcedure.query(async ({ ctx }) => {
+    return ctx.db
+      .select({
+        id: locations.id,
+        name: locations.name,
+        isPrimary: locations.isPrimary,
+      })
+      .from(locations)
+      .where(
+        and(
+          eq(locations.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(locations.deletedAt),
+        ),
+      )
+      .orderBy(
+        desc(locations.isPrimary),
+        asc(locations.name),
+        asc(locations.id),
+      );
+  }),
+
   listAssignableStaff: staffRoleAdminProcedure.query(async ({ ctx }) => {
     return ctx.db
       .select({

@@ -210,6 +210,7 @@ function NewInvoiceForm({
   // Patient
   const [selectedPatientId, setSelectedPatientId] =
     useState<string>(initialPatientId);
+  const [locationId, setLocationId] = useState("");
 
   // Line items
   const [items, setItems] = useState<LineItem[]>([]);
@@ -258,6 +259,21 @@ function NewInvoiceForm({
       : [];
 
   const servicesQuery = trpc.billing.listServices.useQuery();
+  const locationsQuery = trpc.appointments.listLocations.useQuery();
+  const locationsMissing =
+    !locationsQuery.isLoading && !locationsQuery.error && !locationsQuery.data;
+  const locationOptions = useMemo(
+    () =>
+      locationsQuery.data && !locationsQuery.error && !locationsMissing
+        ? locationsQuery.data
+        : [],
+    [locationsQuery.data, locationsQuery.error, locationsMissing],
+  );
+  useEffect(() => {
+    if (!locationId && locationOptions.length > 0) {
+      setLocationId(locationOptions[0]!.id);
+    }
+  }, [locationId, locationOptions]);
   const servicesMissing =
     !servicesQuery.isLoading && !servicesQuery.error && !servicesQuery.data;
   const serviceOptions =
@@ -332,6 +348,10 @@ function NewInvoiceForm({
     items.length <= BILLING_INVOICE_MAX_ITEMS &&
     isBillingInvoiceSubtotalValid(items) &&
     Boolean(previewTotals) &&
+    !locationsQuery.isLoading &&
+    !locationsQuery.error &&
+    !locationsMissing &&
+    (locationOptions.length === 0 || Boolean(locationId)) &&
     !createInvoice.isPending;
 
   function handleServiceSelect(serviceId: string) {
@@ -373,6 +393,7 @@ function NewInvoiceForm({
     createInvoice.mutate({
       clientId: selectedClient.id,
       patientId: selectedPatientId || undefined,
+      locationId: locationId || undefined,
       items: items.map((item) => ({
         description: item.description.trim(),
         quantity: item.quantity,
@@ -537,6 +558,40 @@ function NewInvoiceForm({
             ) : null}
           </div>
         )}
+
+        {locationsQuery.error || locationsMissing ? (
+          <InlineQueryMessage kind="error">
+            {locationsQuery.error
+              ? `Unable to load invoice branches. ${locationsQuery.error.message}`
+              : "Unable to load invoice branches. Please retry."}
+          </InlineQueryMessage>
+        ) : locationsQuery.isLoading ? (
+          <InlineQueryMessage kind="loading">
+            Loading invoice branches...
+          </InlineQueryMessage>
+        ) : locationOptions.length > 0 ? (
+          <div>
+            <label
+              htmlFor="invoice-location"
+              className="mb-1 block text-sm font-medium"
+            >
+              Branch *
+            </label>
+            <select
+              id="invoice-location"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={locationId}
+              onChange={(event) => setLocationId(event.target.value)}
+            >
+              <option value="">-- Select a branch --</option>
+              {locationOptions.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
 
         {/* Add Line Item */}
         <div>
