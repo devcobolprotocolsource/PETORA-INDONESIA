@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { staffRoleAssignments } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
@@ -58,6 +59,7 @@ function objectContainsText(
 }
 
 function createDb(opts?: {
+  assignments?: unknown[];
   selectResults?: unknown[][];
   insertedRows?: unknown[];
   updatedRows?: unknown[];
@@ -65,10 +67,18 @@ function createDb(opts?: {
   const lockEvents: string[] = [];
   const selectResults = [...(opts?.selectResults ?? [])];
   const select = vi.fn(() => {
-    const result = selectResults.shift() ?? [];
+    let result: unknown[] = [];
     const builder = {
-      from: vi.fn(() => builder),
+      from: vi.fn((table: unknown) => {
+        result =
+          table === staffRoleAssignments
+            ? (opts?.assignments ?? [])
+            : (selectResults.shift() ?? []);
+        return builder;
+      }),
       where: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
       orderBy: vi.fn(() => builder),
       limit: vi.fn(() => builder),
       for: vi.fn((mode: string) => {
@@ -152,6 +162,28 @@ describe("clients mutation safety", () => {
         lastName: "Lovelace",
       }),
     ).resolves.toMatchObject({ id: CLIENT_ID });
+  });
+
+  it("denies practice-wide client writes to branch-only permission assignments", async () => {
+    const { db, insertValues } = createDb({
+      assignments: [
+        {
+          assignmentActive: true,
+          locationDeletedAt: null,
+          locationId: "00000000-0000-0000-0000-000000000007",
+          permissionKey: "clients.manage",
+          roleActive: true,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").create({
+        firstName: "Ada",
+        lastName: "Lovelace",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("returns the practice timezone with client list results", () => {
@@ -243,7 +275,7 @@ describe("clients mutation safety", () => {
     });
   });
 
-  it("rejects invalid list and contact inputs before DB work", async () => {
+  it("rejects invalid list and contact inputs before client data queries", async () => {
     const { db, select, insertValues, updateSet } = createDb();
 
     await expect(
@@ -306,7 +338,7 @@ describe("clients mutation safety", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(5);
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
   });
@@ -450,7 +482,7 @@ describe("clients mutation safety", () => {
       message: expect.stringContaining("complete SMS consent"),
     });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -469,7 +501,7 @@ describe("clients mutation safety", () => {
       message: "A valid mobile phone number is required for SMS consent",
     });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
     expect(insertValues).not.toHaveBeenCalled();
   });
 

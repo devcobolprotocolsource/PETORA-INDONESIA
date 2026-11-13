@@ -3,11 +3,28 @@ import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 const { waitlistRouter } = await import("../routers/waitlist");
 
@@ -18,13 +35,13 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const TYPE_ID = "00000000-0000-0000-0000-000000000004";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000005";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
   const session = {
     user: {
       id: USER_ID,
-      email: "frontdesk@example.com",
+      email: `${role}@example.com`,
       name: "Front Desk",
-      role: "front_desk",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -84,6 +101,32 @@ afterEach(() => {
 });
 
 describe("waitlist add safety", () => {
+  it("allows custom scheduling permission and denies roles without it", async () => {
+    const denied = createDb();
+    await expect(
+      callerWithDb(denied.db, "viewer").add({ clientId: CLIENT_ID }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(denied.select).not.toHaveBeenCalled();
+
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "appointments.schedule.manage",
+        roleActive: true,
+      },
+    ]);
+    const allowed = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [{ id: CLIENT_ID }]],
+    });
+
+    await expect(
+      callerWithDb(allowed.db, "custom").add({ clientId: CLIENT_ID }),
+    ).resolves.toMatchObject({ id: WAITLIST_ID, clientId: CLIENT_ID });
+    expect(allowed.insertValues).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects invalid preferred and slot dates before querying", async () => {
     const { db, select, insertValues } = createDb();
 

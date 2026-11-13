@@ -30,11 +30,28 @@
 - Membatasi pembacaan appointment, riwayat pasien, ruang, dokter, lokasi, dan slot berdasarkan cabang role kustom; pembuatan, kunjungan lapangan, reschedule, perubahan status, attach patient, dan penghapusan memeriksa permission cabang.
 - Menambahkan composite foreign key yang memastikan lokasi pada staf, produk, konfigurasi pesan lokasi, dan suppression SMS berasal dari praktik yang sama; migrasi menolak data legacy lintas-praktik alih-alih mengubahnya diam-diam.
 - Menambahkan `location_id` pada invoice, backfill hanya dari appointment dalam praktik yang sama, pilihan cabang pada formulir invoice, dan pembatasan daftar/detail invoice untuk assignment cabang; invoice historis tanpa appointment tetap tidak diberi cabang tebakan.
+- Memigrasikan endpoint lokasi, tipe appointment, dan ruang ke `settings.manage`; fallback admin legacy dipertahankan dan tes membuktikan role kustom berizin dapat mengakses endpoint.
+- Memperbarui gate halaman Settings agar tab Locations, Appointment Types, dan Rooms tersedia untuk pemegang permission praktik `settings.manage`, tab Staff tetap memerlukan `staff.roles.manage`, dan tab admin lain tetap tersembunyi.
+- Memigrasikan pencatatan vital ke `appointments.clinical.manage` dengan fallback role lama; assignment cabang diperiksa lewat lokasi appointment/ruang, sementara pencatatan tanpa appointment tetap praktik-wide dan fail-closed untuk role cabang.
+- Memigrasikan pembuatan dan perubahan treatment plan pasien ke `appointments.clinical.manage`; role legacy admin, veterinarian, dan technician tetap cocok, sementara assignment cabang tidak membuka akses lintas-cabang ke plan pasien praktik-wide.
+- Memigrasikan pembuatan dan perubahan status antrean tunggu ke `appointments.schedule.manage` dengan fallback role lama yang sama; scope cabang masih ditutup karena tabel waitlist belum memiliki lokasi.
+- Memigrasikan perubahan status appointment pada whiteboard ke `appointments.operations.manage`; lokasi cabang diresolusi dari appointment/ruang dan izin diperiksa ulang setelah row appointment terkunci.
+- Menambahkan `inventory.manage` dan `inventory.catalog.manage` untuk memisahkan pengelolaan stok/pemasok dari harga produk; UI membaca izin server dan assignment cabang belum diizinkan karena saldo stok masih global.
+- Memigrasikan pengelolaan care reminder ke permission khusus `care_reminders.manage` dengan fallback role lama yang sama. Resource tidak memiliki lokasi cabang, sehingga assignment cabang tidak memberi akses ke daftar dan mutasi reminder praktik-wide.
+- Memigrasikan penyimpanan draft klinis dan finalisasi klinis ke `appointments.clinical.manage`, serta resolusi follow-up ke `appointments.operations.manage`. Pemeriksaan izin cabang klinis diulang setelah appointment dikunci; penyelesaian kunjungan dan penutupan kerja tetap memakai role guard karena memuat aturan khusus charge/kunjungan.
 - Tes RBAC, migrasi, dan keselamatan pengelolaan staf terpilih lulus (159 tes pada 5 berkas); lint berkas RBAC/UI yang terfokus lulus.
+- Validasi Settings terkini: 106 tes lulus pada 5 berkas saat dijalankan terpisah; lint router dan tes terkait serta `git diff --check` bersih. Lint halaman Settings masih menemukan 2 error dan 1 warning di baris yang tidak terkait perubahan, sedangkan type-check dihentikan lingkungan dengan SIGTERM.
+- Validasi migrasi vital: 14 tes lulus; lint terarah untuk router dan tes bersih.
+- Validasi migrasi treatment plan: 16 tes lulus; lint terarah untuk router dan tes bersih.
+- Validasi migrasi waitlist: 16 tes lulus; lint terarah untuk router dan tes bersih.
+- Validasi migrasi whiteboard: 20 tes lulus; lint terarah untuk router dan tes bersih.
+- Validasi izin inventaris: 64 tes lulus pada tes router, matriks role legacy, dan gate UI; lint terarah serta `git diff --check` bersih.
+- Validasi care reminder dan matriks izin: 16 tes lulus; lint terarah bersih.
+- Validasi encounter: 42 tes closeout lulus; lint router bersih. Lint berkas tes masih melaporkan `no-explicit-any` pada mock lama di baris 66.
 
 ## Berikutnya
 
-- Migrasikan guard server lain dari role enum ke permission dinamis secara bertahap; masih ada 111 pemakaian `requireRole` pada 30 router.
+- Migrasikan guard server lain dari role enum ke permission dinamis secara bertahap; masih ada 101 pemakaian `requireRole` pada 26 router.
 - Lengkapi enforcement cabang pada pembatalan recurring series; operasi lainnya yang menunjuk appointment ID kini memeriksa lokasi efektif dan izin cabang.
 - Lengkapi enforcement cabang pada seluruh aksi kasir, pembayaran/refund, antrean dispense, laporan, dan UI invoice; daftar/detail dan penetapan lokasi invoice sudah memiliki fondasi, tetapi belum seluruh operasi billing memakai permission dinamis.
 - Pindahkan saldo dan reorder point stok dari satu saldo produk praktik ke saldo per cabang/gudang; `products.stockQuantity` saat ini masih satu saldo bersama.
@@ -62,5 +79,7 @@
 - Tes migrasi database terpilih lulus (78 tes); `db:generate` menyatakan skema dan migration journal sinkron. Type-check paket DB dihentikan lingkungan dengan exit code 143 pada percobaan ulang.
 - Validasi RBAC, assignment cabang, dan appointment terbaru lulus (109 tes pada 5 berkas); lint terarah tanpa error, dengan lima warning lama pada test mock tRPC. Type-check web dihentikan lingkungan dengan SIGTERM dan belum mencakup perubahan UI assignment cabang terakhir.
 - Validasi penambahan cabang invoice lulus (158 tes pada 5 berkas, 1 tes dilewati); type-check paket DB dihentikan lingkungan dengan exit code 143, dan lint billing masih melaporkan error yang sudah ada pada file terkait.
+- Validasi permission pengelolaan lokasi lulus (84 tes pada 4 berkas); 111 guard `requireRole` tetap ada karena migrasi ini tidak menghapus guard legacy yang masih dipakai endpoint sensitif lain.
+- Tes UI permission-aware Settings lulus (21 tes); lint Settings masih gagal pada pelanggaran lama dan type-check web dihentikan lingkungan dengan exit code 143.
 - Lint terarah untuk implementasi RBAC lulus. Lint halaman settings penuh masih menemukan dua error yang sudah ada di area lain halaman (`react/no-unescaped-entities`, `no-explicit-any`) dan satu warning hook dependency; tidak diubah karena di luar cakupan.
 - Kesesuaian implementasi fondasi dengan aturan bisnis PETORA belum diaudit menyeluruh.

@@ -13,7 +13,12 @@ import {
   sql,
 } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+  requireRole,
+} from "../trpc";
 import type { Database } from "@openpims/db/client";
 import {
   appointments,
@@ -39,7 +44,13 @@ import {
   visitCloseouts,
   visitWorkItems,
   users,
+  rooms,
 } from "@openpims/db";
+import {
+  effectiveStaffPermissions,
+  loadCustomRolePermissionAssignments,
+  type LegacyStaffRole,
+} from "@/lib/authorization/staff-permissions";
 import {
   CLOSEOUT_DIAGNOSIS_MAX_LENGTH,
   CLOSEOUT_FOLLOW_UP_NOTES_MAX_LENGTH,
@@ -71,6 +82,88 @@ type EncounterContext = {
   db: EncounterDb;
   practiceId: string;
 };
+
+type EncounterPermissionKey =
+  | "appointments.clinical.manage"
+  | "appointments.operations.manage";
+
+async function appointmentLocationIdFromInput(
+  input: unknown,
+  ctx: { db: Database; practiceId: string },
+): Promise<string | undefined> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("appointmentId" in input) ||
+    typeof input.appointmentId !== "string" ||
+    !z.string().guid().safeParse(input.appointmentId).success
+  ) {
+    return undefined;
+  }
+
+  const [appointment] = await ctx.db
+    .select({
+      locationId:
+        sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+    })
+    .from(appointments)
+    .leftJoin(
+      rooms,
+      and(
+        eq(appointments.roomId, rooms.id),
+        eq(rooms.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(rooms.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(appointments.id, input.appointmentId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return appointment?.locationId ?? undefined;
+}
+
+async function assertEncounterPermissionAtLocation(
+  db: Database,
+  ctx: {
+    practiceId: string;
+    user: { id: string; role: LegacyStaffRole };
+  },
+  permission: EncounterPermissionKey,
+  locationId: string | null,
+) {
+  const assignments = await loadCustomRolePermissionAssignments(
+    db,
+    ctx.practiceId,
+    ctx.user.id,
+  );
+  if (
+    !effectiveStaffPermissions(
+      assignments,
+      ctx.user.role,
+      locationId ?? undefined,
+    ).has(permission)
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Your account does not have permission to perform this action.",
+    });
+  }
+}
+
+const operationsPermission = requirePermission(
+  "appointments.operations.manage",
+  { locationIdFromInput: appointmentLocationIdFromInput },
+);
+const clinicalPermission = requirePermission("appointments.clinical.manage", {
+  locationIdFromInput: appointmentLocationIdFromInput,
+});
 
 const optionalText = (label: string, max: number) =>
   z
@@ -367,6 +460,8 @@ async function lockAppointment(
     .select({
       id: appointments.id,
       status: appointments.status,
+      effectiveLocationId:
+        sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
       startTime: appointments.startTime,
       patientId: appointments.patientId,
       clientId: appointments.clientId,
@@ -381,6 +476,15 @@ async function lockAppointment(
         eq(practices.id, ctx.practiceId),
         isNull(practices.deletedAt)
       )
+    )
+    .leftJoin(
+      rooms,
+      and(
+        eq(appointments.roomId, rooms.id),
+        eq(rooms.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(rooms.deletedAt),
+      ),
     )
     .leftJoin(
       appointmentTypes,
@@ -1620,12 +1724,18 @@ export const encountersRouter = createRouter({
     ),
 
   saveDraft: protectedProcedure
-    .use(requireRole("admin", "veterinarian", "technician"))
+    .use(clinicalPermission)
     .input(clinicalDraftInput)
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
+        await assertEncounterPermissionAtLocation(
+          tx as unknown as Database,
+          ctx,
+          "appointments.clinical.manage",
+          appointment.effectiveLocationId,
+        );
         const existing = await getCloseoutRow(txCtx, input.appointmentId);
 
         if (existing?.amendmentDraft) {
@@ -1716,12 +1826,18 @@ export const encountersRouter = createRouter({
     ),
 
   finalizeClinical: protectedProcedure
-    .use(requireRole("admin", "veterinarian", "technician"))
+    .use(clinicalPermission)
     .input(finalizeClinicalInput)
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
+        await assertEncounterPermissionAtLocation(
+          tx as unknown as Database,
+          ctx,
+          "appointments.clinical.manage",
+          appointment.effectiveLocationId,
+        );
         if (
           appointment.requiresDoctor !== 0 &&
           !(await isVeterinarianProvider(txCtx, ctx.user.id, ctx.user.role))
@@ -2183,12 +2299,18 @@ export const encountersRouter = createRouter({
     ),
 
   resolveNeededFollowUp: protectedProcedure
-    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .use(operationsPermission)
     .input(resolveNeededFollowUpInput)
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
+        await assertEncounterPermissionAtLocation(
+          tx as unknown as Database,
+          ctx,
+          "appointments.operations.manage",
+          appointment.effectiveLocationId,
+        );
         const closeout = await getCloseoutRow(txCtx, input.appointmentId);
         if (
           !closeout ||

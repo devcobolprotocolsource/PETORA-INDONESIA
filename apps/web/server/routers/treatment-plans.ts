@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { eq, and, isNull, asc, desc, inArray, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+} from "../trpc";
 import {
   patients,
   practices,
@@ -21,7 +25,7 @@ import {
   optionalClinicalTextInput,
 } from "@/lib/records/clinical-inputs";
 
-const clinicalRole = requireRole("admin", "veterinarian", "technician");
+const clinicalPermission = requirePermission("appointments.clinical.manage");
 const planStatuses = ["active", "completed", "discontinued"] as const;
 const itemStatuses = ["pending", "in_progress", "done", "skipped"] as const;
 
@@ -209,7 +213,7 @@ export const treatmentPlansRouter = createRouter({
     }),
 
   create: protectedProcedure
-    .use(clinicalRole)
+    .use(clinicalPermission)
     .input(createTreatmentPlanInput)
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -253,7 +257,7 @@ export const treatmentPlansRouter = createRouter({
     }),
 
   updateStatus: protectedProcedure
-    .use(clinicalRole)
+    .use(clinicalPermission)
     .input(
       z.object({
         id: z.string().guid(),
@@ -304,7 +308,7 @@ export const treatmentPlansRouter = createRouter({
     }),
 
   updateItemStatus: protectedProcedure
-    .use(clinicalRole)
+    .use(clinicalPermission)
     .input(
       z.object({
         itemId: z.string().guid(),

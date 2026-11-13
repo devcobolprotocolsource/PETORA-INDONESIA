@@ -3,17 +3,35 @@ import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
 
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
+
 const { encountersRouter } = await import("../routers/encounters");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000002";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000009";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000003";
 const CLIENT_ID = "00000000-0000-0000-0000-000000000004";
 const CLOSEOUT_ID = "00000000-0000-0000-0000-000000000005";
@@ -1017,7 +1035,7 @@ describe("encounter closeout safety", () => {
     await expect(
       callerWithDb(db, "front_desk").finalizeClinical(clinicalInput)
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(1);
   });
 
   it("opens an amendment without replacing the operative signed handoff", async () => {
@@ -1102,6 +1120,83 @@ describe("encounter closeout safety", () => {
     const values = updateSet.mock.calls[0]![0] as Record<string, unknown>;
     expect(values).not.toHaveProperty("dischargeInstructions");
     expect(values).not.toHaveProperty("clinicalFinalizedBy");
+  });
+
+  it("rechecks custom clinical permission against the locked appointment branch", async () => {
+    const branchAssignment = {
+      assignmentActive: true,
+      locationId: LOCATION_ID,
+      locationActive: true,
+      permissionKey: "appointments.clinical.manage",
+      roleActive: true,
+    };
+    mocks.loadCustomRolePermissionAssignments
+      .mockResolvedValueOnce([branchAssignment])
+      .mockResolvedValueOnce([branchAssignment]);
+    const signedWithDraft = {
+      ...clinicalFinalized,
+      revision: 3,
+      amendmentDraft: activeAmendmentDraft,
+    };
+    const saved = {
+      ...signedWithDraft,
+      revision: 4,
+      amendmentDraft: {
+        ...activeAmendmentDraft,
+        dischargeInstructions: "Give one tablet with food.",
+      },
+    };
+    const { db, select, updateSet } = createDb({
+      selectResults: [
+        [{ locationId: LOCATION_ID }],
+        [{ ...openAppointment, effectiveLocationId: LOCATION_ID }],
+        [{ id: PATIENT_ID }],
+        [signedWithDraft],
+      ],
+      updateResults: [[saved]],
+    });
+
+    await expect(
+      callerWithDb(db, "veterinarian").saveDraft({
+        ...clinicalInput,
+        expectedRevision: 3,
+        dischargeInstructions: "Give one tablet with food.",
+      }),
+    ).resolves.toEqual(saved);
+
+    expect(select).toHaveBeenCalledTimes(4);
+    expect(updateSet).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies a branch role when its permission changes before the locked check", async () => {
+    const assignmentAtRequest = {
+      assignmentActive: true,
+      locationId: LOCATION_ID,
+      locationActive: true,
+      permissionKey: "appointments.clinical.manage",
+      roleActive: true,
+    };
+    const assignmentAtLock = {
+      ...assignmentAtRequest,
+      locationId: "00000000-0000-0000-0000-000000000010",
+    };
+    mocks.loadCustomRolePermissionAssignments
+      .mockResolvedValueOnce([assignmentAtRequest])
+      .mockResolvedValueOnce([assignmentAtLock]);
+    const { db, select, updateSet } = createDb({
+      selectResults: [
+        [{ locationId: LOCATION_ID }],
+        [{ ...openAppointment, effectiveLocationId: LOCATION_ID }],
+        [{ id: PATIENT_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "veterinarian").saveDraft(clinicalInput),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).toHaveBeenCalledTimes(3);
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("opens and atomically promotes an amendment after completed checkout", async () => {

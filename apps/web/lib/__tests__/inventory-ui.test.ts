@@ -161,23 +161,18 @@ describe("inventory product form UX", () => {
   });
 
   it("keeps viewer access read-only for inventory writes", () => {
-    expect(source).toContain('import { useSession } from "next-auth/react"');
     expect(source).toContain(
-      "function canManageInventoryRole(role?: string | null): boolean"
+      "trpc.inventory.managementPermissions.useQuery()"
     );
-    expect(source).toContain('role === "admin"');
-    expect(source).toContain('role === "veterinarian"');
-    expect(source).toContain('role === "technician"');
-    expect(source).toContain('role === "front_desk"');
-    expect(source).toContain("const { data: session } = useSession()");
     expect(source).toContain(
-      "const canManageInventory = canManageInventoryRole(session?.user?.role)"
+      "managementPermissions.data?.manageInventory ?? false"
     );
     expect(source).toContain("{canManageInventory && (");
     expect(source).toContain(
-      "const canManagePricing = canManageProductPricing(session?.user?.role)"
+      "managementPermissions.data?.manageCatalog ?? false"
     );
     expect(source).toContain("{canManagePricing && showAddProduct && (");
+    expect(source).toContain("Unable to verify inventory permissions:");
     expect(source).toContain("canManagePricing={canManagePricing}");
     expect(source).toContain("canManageInventory && editingId === product.id");
     expect(source).toContain("{canManageInventory ? (");
@@ -187,7 +182,10 @@ describe("inventory product form UX", () => {
     expect(source).toContain("canManageInventory\n                  ? {");
     expect(routerSource).toContain("const inventoryManagerProcedure =");
     expect(routerSource).toContain(
-      'requireRole("admin", "veterinarian", "technician", "front_desk")'
+      'requirePermission("inventory.manage")'
+    );
+    expect(routerSource).toContain(
+      'requirePermission("inventory.catalog.manage")'
     );
     expect(routerSource).toContain("create: productPricingProcedure");
     expect(routerSource).toContain("update: inventoryManagerProcedure");

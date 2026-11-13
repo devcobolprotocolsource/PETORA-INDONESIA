@@ -7,7 +7,10 @@ const REMINDER_ID = "00000000-0000-0000-0000-000000000002";
 const SECOND_REMINDER_ID = "00000000-0000-0000-0000-000000000003";
 const UPDATED_AT = new Date("2026-08-24T16:00:00.000Z");
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  role = "veterinarian",
+) {
   return careRemindersRouter.createCaller({
     db,
     session: {
@@ -15,7 +18,7 @@ function callerWithDb(db: Record<string, unknown>) {
         id: USER_ID,
         email: "doctor@example.test",
         name: "Dr. Rivera",
-        role: "veterinarian",
+        role,
         practiceId: PRACTICE_ID,
       },
     },
@@ -23,10 +26,22 @@ function callerWithDb(db: Record<string, unknown>) {
 }
 
 function createDb(options?: {
+  assignmentLookups?: number;
+  assignments?: Array<{
+    assignmentActive: boolean;
+    locationDeletedAt: Date | null;
+    locationId: string | null;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>;
   current?: Array<{ id: string; status: string; updatedAt: Date }>;
   updated?: Array<{ id: string }>;
 }) {
   const selectResults: unknown[][] = [
+    ...Array.from(
+      { length: options?.assignmentLookups ?? 1 },
+      () => options?.assignments ?? [],
+    ),
     [{ id: PRACTICE_ID, timezone: "America/New_York" }],
     options?.current ?? [],
   ];
@@ -71,8 +86,31 @@ afterEach(() => {
 });
 
 describe("care reminder dismissal", () => {
+  it("does not let a branch assignment manage practice-wide reminders", async () => {
+    const { db, select } = createDb({
+      assignments: [
+        {
+          assignmentActive: true,
+          locationDeletedAt: null,
+          locationId: "00000000-0000-0000-0000-000000000004",
+          permissionKey: "care_reminders.manage",
+          roleActive: true,
+        },
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "technician").setCompleted({
+        id: REMINDER_ID,
+        completed: true,
+        expectedUpdatedAt: UPDATED_AT.toISOString(),
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).toHaveBeenCalledTimes(1);
+  });
+
   it("requires an explanatory reason and unique bounded targets before DB work", async () => {
-    const { db, select } = createDb();
+    const { db, select } = createDb({ assignmentLookups: 2 });
     const caller = callerWithDb(db);
 
     await expect(
@@ -95,7 +133,7 @@ describe("care reminder dismissal", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(select).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(2);
   });
 
   it("atomically dismisses all selected open reminders with attribution", async () => {

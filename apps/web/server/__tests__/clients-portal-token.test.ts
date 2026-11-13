@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { staffRoleAssignments } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   generatePortalAccessToken: vi.fn(() => "portal-token-1"),
@@ -42,11 +43,21 @@ function callerWithDb(db: Record<string, unknown>) {
 
 function createInsertDb(inserted?: Record<string, unknown>) {
   const select = vi.fn(() => {
-    const rows = [{ id: PRACTICE_ID }];
+    let rows: unknown[] = [];
     const builder = {
-      from: vi.fn(() => builder),
+      from: vi.fn((table: unknown) => {
+        rows =
+          table === staffRoleAssignments ? [] : [{ id: PRACTICE_ID }];
+        return builder;
+      }),
       where: vi.fn(() => builder),
-      limit: vi.fn(async () => rows),
+      innerJoin: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
+      limit: vi.fn(() => builder),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve(rows).then(resolve, reject),
     };
     return builder;
   });
@@ -71,6 +82,19 @@ function createInsertDb(inserted?: Record<string, unknown>) {
 }
 
 function createUpdateDb(updatedRows: unknown[]) {
+  const select = vi.fn(() => {
+    const builder = {
+      from: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
+      leftJoin: vi.fn(() => builder),
+      where: vi.fn(() => builder),
+      then: (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (error: unknown) => unknown,
+      ) => Promise.resolve([]).then(resolve, reject),
+    };
+    return builder;
+  });
   const updateSet = vi.fn(() => ({
     where: vi.fn(() => ({
       returning: vi.fn(async () => updatedRows),
@@ -80,6 +104,7 @@ function createUpdateDb(updatedRows: unknown[]) {
   const db: Record<string, unknown> = {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
     execute: vi.fn(async () => undefined),
+    select,
     update,
   };
   return { db, updateSet };

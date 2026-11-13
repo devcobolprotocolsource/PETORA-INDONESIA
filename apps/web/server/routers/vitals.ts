@@ -1,11 +1,18 @@
 import { z } from "zod";
 import { eq, and, isNull, desc, getTableColumns, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+  requireRole,
+} from "../trpc";
+import {
+  appointments,
   clinicalRecordCorrections,
   patients,
   practices,
+  rooms,
   vitalSigns,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -39,7 +46,9 @@ import {
   CLINICAL_CORRECTION_REASON_MIN_LENGTH,
 } from "@/lib/records/clinical-correction-policy";
 
-const recordRole = requireRole("admin", "veterinarian", "technician");
+const recordPermission = requirePermission("appointments.clinical.manage", {
+  locationIdFromInput: appointmentLocationIdFromInput,
+});
 const correctionRole = requireRole("admin", "veterinarian");
 const temperatureInput = clinicalDecimalInput("Temperature", {
   min: VITALS_TEMPERATURE_MIN_C,
@@ -68,6 +77,47 @@ function activePracticePredicate(practiceId: string) {
     where ${practices.id} = ${practiceId}
       and ${practices.deletedAt} is null
   )`;
+}
+
+async function appointmentLocationIdFromInput(
+  input: unknown,
+  ctx: { db: Database; practiceId: string },
+): Promise<string | undefined> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("appointmentId" in input) ||
+    typeof input.appointmentId !== "string" ||
+    !z.string().guid().safeParse(input.appointmentId).success
+  ) {
+    return undefined;
+  }
+
+  const [appointment] = await ctx.db
+    .select({
+      locationId:
+        sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+    })
+    .from(appointments)
+    .leftJoin(
+      rooms,
+      and(
+        eq(appointments.roomId, rooms.id),
+        eq(rooms.practiceId, ctx.practiceId),
+        isNull(rooms.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(appointments.id, input.appointmentId),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return appointment?.locationId ?? undefined;
 }
 
 async function assertPatientBelongsToPractice(
@@ -274,7 +324,7 @@ export const vitalsRouter = createRouter({
     ),
 
   record: protectedProcedure
-    .use(recordRole)
+    .use(recordPermission)
     .input(
       z
         .object({

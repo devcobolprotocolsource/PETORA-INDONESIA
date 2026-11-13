@@ -3,11 +3,28 @@ import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 const {
   vitalsRouter,
@@ -19,6 +36,7 @@ const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000003";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000005";
 
 function callerWithDb(db: Record<string, unknown>, role = "technician") {
   const session = {
@@ -91,6 +109,96 @@ afterEach(() => {
 });
 
 describe("vitals.record tenant safety", () => {
+  it("allows a custom role with appointments.clinical.manage", async () => {
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "appointments.clinical.manage",
+        roleActive: true,
+      },
+    ]);
+    const { db, insertValues } = createDb({
+      patientRows: [{ id: PATIENT_ID }],
+    });
+
+    await expect(
+      callerWithDb(db, "custom").record({
+        patientId: PATIENT_ID,
+        temperatureC: 38.6,
+      }),
+    ).resolves.toMatchObject({ patientId: PATIENT_ID });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        temperatureC: "38.6",
+      }),
+    );
+  });
+
+  it("resolves branch permission from the linked appointment", async () => {
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: LOCATION_ID,
+        locationActive: true,
+        permissionKey: "appointments.clinical.manage",
+        roleActive: true,
+      },
+    ]);
+    const { db, select, insertValues } = createDb({
+      selectResults: [
+        [{ locationId: LOCATION_ID }],
+        [{ id: PATIENT_ID }],
+        [{ id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" }],
+        [],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "custom").record({
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        temperatureC: 38.6,
+      }),
+    ).resolves.toMatchObject({ patientId: PATIENT_ID });
+    expect(select).toHaveBeenCalledTimes(4);
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+      }),
+    );
+  });
+
+  it("does not grant branch-scoped vital recording without an appointment", async () => {
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: LOCATION_ID,
+        locationActive: true,
+        permissionKey: "appointments.clinical.manage",
+        roleActive: true,
+      },
+    ]);
+    const { db, select, insertValues } = createDb({});
+
+    await expect(
+      callerWithDb(db, "custom").record({
+        patientId: PATIENT_ID,
+        temperatureC: 38.6,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("restricts vitals recording to clinical staff before querying", async () => {
     const { db, select, insertValues } = createDb({});
 

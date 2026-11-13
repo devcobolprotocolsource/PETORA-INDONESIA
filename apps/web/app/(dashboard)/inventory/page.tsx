@@ -2,8 +2,7 @@
 
 import { MarkupInput } from "@/components/inventory/markup-input";
 
-import { useMemo, useRef, useState } from "react";
-import { useSession } from "next-auth/react";
+import { useRef, useState } from "react";
 import {
   Search,
   Package,
@@ -42,7 +41,6 @@ import {
   INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
   PRODUCT_PRICING_FORBIDDEN_MESSAGE,
-  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
   isInventoryNonnegativeIntegerInputValid,
   isInventoryOptionalCurrencyAmountInputValid,
@@ -97,15 +95,6 @@ function expirationBadge(status: string) {
 
 const trimmedOrUndefined = (value: string) => value.trim() || undefined;
 const trimmedOrNull = (value: string) => value.trim() || null;
-
-function canManageInventoryRole(role?: string | null): boolean {
-  return (
-    role === "admin" ||
-    role === "veterinarian" ||
-    role === "technician" ||
-    role === "front_desk"
-  );
-}
 
 function formatDateOnly(value: string): string {
   if (!isInventoryOptionalExpirationDateInputValid(value)) {
@@ -1045,7 +1034,6 @@ function EditSupplierRow({
 // --- Main Page ---
 
 export default function InventoryPage() {
-  const { data: session } = useSession();
   const formatCurrency = useCurrencyFormatter();
   const [tab, setTab] = useState<"products" | "suppliers">("products");
   const [search, setSearch] = useState("");
@@ -1059,8 +1047,10 @@ export default function InventoryPage() {
   );
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const searchFilter = search.trim();
-  const canManageInventory = canManageInventoryRole(session?.user?.role);
-  const canManagePricing = canManageProductPricing(session?.user?.role);
+  const managementPermissions = trpc.inventory.managementPermissions.useQuery();
+  const canManageInventory =
+    managementPermissions.data?.manageInventory ?? false;
+  const canManagePricing = managementPermissions.data?.manageCatalog ?? false;
 
   const productsQuery = trpc.inventory.list.useQuery(
     {
@@ -1097,6 +1087,12 @@ export default function InventoryPage() {
           </p>
         </div>
       </div>
+      {managementPermissions.error && (
+        <p className="mt-3 text-sm text-destructive" role="alert">
+          Unable to verify inventory permissions:{" "}
+          {managementPermissions.error.message}
+        </p>
+      )}
 
       {/* Tabs */}
       <div className="mt-4 flex gap-1 border-b border-border">

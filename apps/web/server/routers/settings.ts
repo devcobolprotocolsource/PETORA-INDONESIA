@@ -132,6 +132,9 @@ import {
 } from "@/lib/authorization/staff-permissions";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
+const settingsManageProcedure = protectedProcedure.use(
+  requirePermission("settings.manage"),
+);
 const staffRoleAdminProcedure = protectedProcedure.use(
   requirePermission("staff.roles.manage"),
 );
@@ -1159,7 +1162,9 @@ export const settingsRouter = createRouter({
 
   // ── Locations ─────────────────────────────────────────────
 
-  listLocations: adminProcedure.query(async ({ ctx }) => {
+  canManagePracticeSettings: settingsManageProcedure.query(() => true),
+
+  listLocations: settingsManageProcedure.query(async ({ ctx }) => {
     await assertActivePractice(ctx);
     return ctx.db
       .select({
@@ -1180,7 +1185,7 @@ export const settingsRouter = createRouter({
       );
   }),
 
-  createLocation: adminProcedure
+  createLocation: settingsManageProcedure
     .input(
       z.object({
         name: locationNameInput,
@@ -1231,7 +1236,7 @@ export const settingsRouter = createRouter({
       return created;
     }),
 
-  updateLocation: adminProcedure
+  updateLocation: settingsManageProcedure
     .input(
       z.object({
         id: z.string().guid(),
@@ -1265,7 +1270,7 @@ export const settingsRouter = createRouter({
       return updated;
     }),
 
-  setPrimaryLocation: adminProcedure
+  setPrimaryLocation: settingsManageProcedure
     .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.transaction(async (tx) => {
@@ -1318,7 +1323,7 @@ export const settingsRouter = createRouter({
       return updated;
     }),
 
-  deleteLocation: adminProcedure
+  deleteLocation: settingsManageProcedure
     .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
@@ -3465,7 +3470,7 @@ export const settingsRouter = createRouter({
 
   // ── Appointment Types ─────────────────────────────────────
 
-  listAppointmentTypes: adminProcedure.query(async ({ ctx }) => {
+  listAppointmentTypes: settingsManageProcedure.query(async ({ ctx }) => {
     await assertActivePractice(ctx);
     return ctx.db
       .select()
@@ -3479,7 +3484,7 @@ export const settingsRouter = createRouter({
       );
   }),
 
-  createAppointmentType: adminProcedure
+  createAppointmentType: settingsManageProcedure
     .input(
       z.object({
         name: appointmentTypeNameInput,
@@ -3504,7 +3509,7 @@ export const settingsRouter = createRouter({
       return type!;
     }),
 
-  updateAppointmentType: adminProcedure
+  updateAppointmentType: settingsManageProcedure
     .input(
       z.object({
         id: z.string().guid(),
@@ -3548,7 +3553,7 @@ export const settingsRouter = createRouter({
       return updated;
     }),
 
-  deleteAppointmentType: adminProcedure
+  deleteAppointmentType: settingsManageProcedure
     .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
@@ -3665,7 +3670,7 @@ export const settingsRouter = createRouter({
 
   // ── Rooms ─────────────────────────────────────────────────
 
-  listRooms: adminProcedure.query(async ({ ctx }) => {
+  listRooms: settingsManageProcedure.query(async ({ ctx }) => {
     await assertActivePractice(ctx);
     return ctx.db
       .select()
@@ -3679,7 +3684,7 @@ export const settingsRouter = createRouter({
       );
   }),
 
-  createRoom: adminProcedure
+  createRoom: settingsManageProcedure
     .input(
       z.object({
         name: roomNameInput,
@@ -3716,7 +3721,7 @@ export const settingsRouter = createRouter({
       });
     }),
 
-  deleteRoom: adminProcedure
+  deleteRoom: settingsManageProcedure
     .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {

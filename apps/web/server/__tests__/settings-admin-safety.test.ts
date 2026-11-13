@@ -6,6 +6,13 @@ const mocks = vi.hoisted(() => ({
   sendStaffInviteEmail: vi.fn(async () => ({ success: true })),
   lockPracticeForExternalSideEffects: vi.fn(async () => true),
   assertOutboundEmailAllowed: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 const SETTINGS_SOURCE = readFileSync(
@@ -20,6 +27,16 @@ const DEMO_DATA_LIFECYCLE_SOURCE = readFileSync(
 vi.mock("@/lib/auth-tokens", () => ({
   createAuthToken: mocks.createAuthToken,
 }));
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 vi.mock("@/lib/email", () => ({
   sendStaffInviteEmail: mocks.sendStaffInviteEmail,

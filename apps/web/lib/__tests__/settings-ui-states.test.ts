@@ -32,20 +32,22 @@ import {
 describe("settings UI states", () => {
   const source = readFileSync("app/(dashboard)/settings/page.tsx", "utf8");
 
-  it("checks settings access before rendering admin-only tabs", () => {
+  it("checks settings permissions before rendering restricted tabs", () => {
     expect(source).toContain("const { data: session, status } = useSession()");
-    expect(source).toContain('if (status === "loading")');
-    expect(source).toContain("Checking settings access...");
-    expect(source).toContain('if (session?.user?.role !== "admin")');
     expect(source).toContain(
-      "Only administrators can access practice settings.",
+      "trpc.settings.canManagePracticeSettings.useQuery",
     );
-    expect(source.indexOf('if (status === "loading")')).toBeLessThan(
-      source.indexOf('if (session?.user?.role !== "admin")'),
+    expect(source).toContain('["locations", "appointmentTypes", "rooms"]');
+    expect(source).toContain('(tab.id === "staff" && Boolean(rolePermissions.data))');
+    expect(source).toContain("Checking settings access...");
+    expect(source).toContain(
+      "You do not have permission to manage practice settings or staff roles.",
     );
-    expect(source.indexOf('if (session?.user?.role !== "admin")')).toBeLessThan(
-      source.indexOf('{activeTab === "practice" && <PracticeInfoTab />}'),
+    expect(source).toContain('{displayedTab === "locations" && <LocationsTab />}');
+    expect(source).toContain(
+      '{displayedTab === "appointmentTypes" && <AppointmentTypesTab />}',
     );
+    expect(source).toContain('{displayedTab === "rooms" && <RoomsTab />}');
   });
 
   it("surfaces query failures in core settings tabs", () => {

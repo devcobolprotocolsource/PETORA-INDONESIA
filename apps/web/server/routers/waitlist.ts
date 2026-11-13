@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { eq, and, isNull, asc, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+} from "../trpc";
 import {
   appointmentWaitlist,
   clients,
@@ -13,7 +17,7 @@ import type { Database } from "@openpims/db/client";
 import { matchWaitlist, type WaitlistEntry } from "@/lib/scheduling/waitlist";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 
-const manageRole = requireRole("admin", "veterinarian", "front_desk");
+const managePermission = requirePermission("appointments.schedule.manage");
 const waitlistDateInput = clinicalDateInput("Waitlist date");
 const waitlistStatusValues = ["waiting", "scheduled", "cancelled"] as const;
 type WaitlistStatus = (typeof waitlistStatusValues)[number];
@@ -208,7 +212,7 @@ export const waitlistRouter = createRouter({
     }),
 
   add: protectedProcedure
-    .use(manageRole)
+    .use(managePermission)
     .input(
       z.object({
         clientId: z.string().guid(),
@@ -241,7 +245,7 @@ export const waitlistRouter = createRouter({
     }),
 
   setStatus: protectedProcedure
-    .use(manageRole)
+    .use(managePermission)
     .input(
       z.object({
         id: z.string().guid(),

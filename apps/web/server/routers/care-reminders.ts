@@ -34,10 +34,14 @@ import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+} from "../trpc";
 
 const manageProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk"),
+  requirePermission("care_reminders.manage"),
 );
 const reminderTitleInput = clinicalTextInput("Reminder title", 255);
 const reminderNotesInput = z

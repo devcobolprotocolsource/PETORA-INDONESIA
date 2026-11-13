@@ -394,6 +394,11 @@ function SettingsPageInner() {
       retry: false,
     },
   );
+  const practiceSettingsPermission =
+    trpc.settings.canManagePracticeSettings.useQuery(undefined, {
+      enabled: status === "authenticated" && !isLegacyAdmin,
+      retry: false,
+    });
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get("tab") as Tab) || "practice";
   const [activeTab, setActiveTab] = useState<Tab>(
@@ -401,12 +406,24 @@ function SettingsPageInner() {
   );
   const visibleTabs = isLegacyAdmin
     ? tabs
-    : tabs.filter((tab) => tab.id === "staff");
-  const displayedTab = isLegacyAdmin ? activeTab : "staff";
+    : tabs.filter(
+        (tab) =>
+          (tab.id === "staff" && Boolean(rolePermissions.data)) ||
+          (["locations", "appointmentTypes", "rooms"] as Tab[]).includes(
+            tab.id,
+          ) &&
+            practiceSettingsPermission.data === true,
+      );
+  const displayedTab = isLegacyAdmin
+    ? activeTab
+    : visibleTabs.some((tab) => tab.id === activeTab)
+      ? activeTab
+      : (visibleTabs[0]?.id ?? "staff");
 
   if (
     status === "loading" ||
-    (!isLegacyAdmin && rolePermissions.isLoading)
+    (!isLegacyAdmin &&
+      (rolePermissions.isLoading || practiceSettingsPermission.isLoading))
   ) {
     return (
       <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
@@ -418,25 +435,35 @@ function SettingsPageInner() {
 
   if (
     !isLegacyAdmin &&
-    rolePermissions.error &&
-    rolePermissions.error.data?.code !== "FORBIDDEN"
+    ((rolePermissions.error &&
+      rolePermissions.error.data?.code !== "FORBIDDEN") ||
+      (practiceSettingsPermission.error &&
+        practiceSettingsPermission.error.data?.code !== "FORBIDDEN"))
   ) {
+    const error =
+      rolePermissions.error?.data?.code !== "FORBIDDEN" &&
+      rolePermissions.error
+        ? rolePermissions.error
+        : practiceSettingsPermission.error;
     return (
       <SettingsLoadError
-        title="Could not verify staff role access"
-        message={rolePermissions.error.message}
-        onRetry={() => void rolePermissions.refetch()}
+        title="Could not verify settings access"
+        message={error?.message ?? "Could not verify settings access."}
+        onRetry={() => {
+          void rolePermissions.refetch();
+          void practiceSettingsPermission.refetch();
+        }}
       />
     );
   }
 
-  if (!isLegacyAdmin && !rolePermissions.data) {
+  if (!isLegacyAdmin && visibleTabs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <ShieldAlert className="h-12 w-12 text-muted-foreground mb-4" />
         <h2 className="font-heading text-xl font-semibold">Access Denied</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Only administrators can access practice settings.
+          You do not have permission to manage practice settings or staff roles.
         </p>
       </div>
     );
@@ -462,7 +489,7 @@ function SettingsPageInner() {
         </Button>
       </div>
 
-      <TrustedProxyNotice />
+      {isLegacyAdmin ? <TrustedProxyNotice /> : null}
 
       <div className="mt-6 flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}

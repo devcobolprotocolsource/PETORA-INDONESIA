@@ -115,6 +115,54 @@ describe("staff role permissions", () => {
     ).toBe(false);
   });
 
+  it("preserves legacy inventory and catalog pricing boundaries", () => {
+    expect(legacyRoleGrantsAnyPermission("admin", [
+      "inventory.manage",
+      "inventory.catalog.manage",
+    ])).toBe(true);
+    expect(
+      legacyRoleGrantsAnyPermission("veterinarian", ["inventory.manage"]),
+    ).toBe(true);
+    expect(
+      legacyRoleGrantsAnyPermission("veterinarian", [
+        "inventory.catalog.manage",
+      ]),
+    ).toBe(false);
+    expect(
+      legacyRoleGrantsAnyPermission("technician", ["inventory.manage"]),
+    ).toBe(true);
+    expect(
+      legacyRoleGrantsAnyPermission("technician", [
+        "inventory.catalog.manage",
+      ]),
+    ).toBe(false);
+    expect(
+      legacyRoleGrantsAnyPermission("front_desk", [
+        "inventory.manage",
+        "inventory.catalog.manage",
+      ]),
+    ).toBe(true);
+    expect(
+      legacyRoleGrantsAnyPermission("viewer", ["inventory.manage"]),
+    ).toBe(false);
+  });
+
+  it("preserves the legacy care reminder manager role set", () => {
+    const permission = ["care_reminders.manage"] as const;
+    for (const role of ["admin", "veterinarian", "technician", "front_desk"]) {
+      expect(legacyRoleGrantsAnyPermission(role, permission)).toBe(true);
+    }
+    expect(legacyRoleGrantsAnyPermission("viewer", permission)).toBe(false);
+  });
+
+  it("preserves the legacy client manager role set", () => {
+    const permission = ["clients.manage"] as const;
+    for (const role of ["admin", "veterinarian", "technician", "front_desk"]) {
+      expect(legacyRoleGrantsAnyPermission(role, permission)).toBe(true);
+    }
+    expect(legacyRoleGrantsAnyPermission("viewer", permission)).toBe(false);
+  });
+
   it("uses custom permissions instead of falling back to a legacy grant", () => {
     const assignments = [
       {

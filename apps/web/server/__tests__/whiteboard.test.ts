@@ -4,6 +4,13 @@ import { readFileSync } from "node:fs";
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
   dispatchWebhookEvent: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -14,19 +21,30 @@ vi.mock("@/lib/webhook-dispatcher", () => ({
   dispatchWebhookEvent: mocks.dispatchWebhookEvent,
 }));
 
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
+
 const { whiteboardRouter } = await import("../routers/whiteboard");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000002";
+const LOCATION_ID = "00000000-0000-0000-0000-000000000003";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "front_desk") {
   const session = {
     user: {
       id: USER_ID,
-      email: "frontdesk@example.com",
+      email: `${role}@example.com`,
       name: "Front Desk",
-      role: "front_desk",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -227,6 +245,44 @@ describe("whiteboard workflows", () => {
         source: "dashboard",
       })
     );
+  });
+
+  it("allows branch clinical operations for the appointment's effective location", async () => {
+    const branchAssignment = {
+      assignmentActive: true,
+      locationId: LOCATION_ID,
+      locationActive: true,
+      permissionKey: "appointments.operations.manage",
+      roleActive: true,
+    };
+    mocks.loadCustomRolePermissionAssignments
+      .mockResolvedValueOnce([branchAssignment])
+      .mockResolvedValueOnce([branchAssignment]);
+    const { db, select, updateSet } = createStatusDb({
+      selectResults: [
+        [{ locationId: LOCATION_ID }],
+        [{
+          id: APPOINTMENT_ID,
+          status: "confirmed",
+          locationId: LOCATION_ID,
+          effectiveLocationId: LOCATION_ID,
+          startTime: new Date("2026-07-01T14:00:00.000Z"),
+          endTime: new Date("2026-07-01T14:30:00.000Z"),
+        }],
+        [],
+      ],
+      updatedRows: [{ id: APPOINTMENT_ID, status: "cancelled" }],
+    });
+
+    await expect(
+      callerWithDb(db, "custom").updateStatus({
+        id: APPOINTMENT_ID,
+        status: "cancelled",
+      }),
+    ).resolves.toMatchObject({ id: APPOINTMENT_ID, status: "cancelled" });
+
+    expect(select).toHaveBeenCalledTimes(3);
+    expect(updateSet).toHaveBeenCalledWith({ status: "cancelled" });
   });
 
   it("emits appointment.cancelled when whiteboard status cancels an appointment", async () => {
@@ -484,9 +540,8 @@ describe("whiteboard query scoping", () => {
   });
 
   it("requires staff roles for whiteboard status updates", () => {
-    expect(source).toContain(
-      '.use(requireRole("admin", "veterinarian", "technician", "front_desk"))'
-    );
+    expect(source).toContain('"appointments.operations.manage"');
+    expect(source).toContain(".use(appointmentOperationsPermission)");
   });
 
   it("uses the shared appointment status workflow guard for updates", () => {

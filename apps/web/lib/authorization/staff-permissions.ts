@@ -14,6 +14,10 @@ export const STAFF_PERMISSION_KEYS = [
   "appointments.schedule.manage",
   "appointments.clinical.manage",
   "appointments.operations.manage",
+  "inventory.manage",
+  "inventory.catalog.manage",
+  "care_reminders.manage",
+  "clients.manage",
 ] as const;
 
 export const STAFF_PERMISSION_CATALOG = [
@@ -49,6 +53,30 @@ export const STAFF_PERMISSION_CATALOG = [
     label: "Manage appointment operations",
     description:
       "Update appointment status, attach patients, and cancel appointments.",
+  },
+  {
+    key: "inventory.manage",
+    label: "Manage inventory and suppliers",
+    description:
+      "Manage inventory items, stock quantities, and supplier details.",
+  },
+  {
+    key: "inventory.catalog.manage",
+    label: "Manage product catalog and pricing",
+    description:
+      "Create products and change their prices, costs, and tax settings.",
+  },
+  {
+    key: "care_reminders.manage",
+    label: "Manage patient care reminders",
+    description:
+      "Create, update, dismiss, and send outreach for patient care reminders.",
+  },
+  {
+    key: "clients.manage",
+    label: "Manage clients",
+    description:
+      "Create and update client records, SMS consent, and portal access.",
   },
 ] as const;
 
@@ -88,20 +116,34 @@ const LEGACY_ROLE_PERMISSIONS: Record<
     "appointments.schedule.manage",
     "appointments.clinical.manage",
     "appointments.operations.manage",
+    "inventory.manage",
+    "inventory.catalog.manage",
+    "care_reminders.manage",
+    "clients.manage",
   ],
   veterinarian: [
     "controlled_substances.manage",
     "appointments.schedule.manage",
     "appointments.clinical.manage",
     "appointments.operations.manage",
+    "inventory.manage",
+    "care_reminders.manage",
+    "clients.manage",
   ],
   technician: [
     "appointments.clinical.manage",
     "appointments.operations.manage",
+    "inventory.manage",
+    "care_reminders.manage",
+    "clients.manage",
   ],
   front_desk: [
     "appointments.schedule.manage",
     "appointments.operations.manage",
+    "inventory.manage",
+    "inventory.catalog.manage",
+    "care_reminders.manage",
+    "clients.manage",
   ],
   viewer: [],
 };

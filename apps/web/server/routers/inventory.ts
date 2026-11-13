@@ -2,7 +2,11 @@ import { isSupportedQuantity } from "@/lib/quantity";
 import { z } from "zod";
 import { eq, and, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+} from "../trpc";
 import { randomUUID } from "node:crypto";
 import {
   inventoryStockAdjustments,
@@ -30,9 +34,12 @@ import {
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
   PRODUCT_PRICING_FIELDS,
   PRODUCT_PRICING_FORBIDDEN_MESSAGE,
-  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
 } from "@/lib/inventory/policy";
+import {
+  effectiveStaffPermissions,
+  loadCustomRolePermissionAssignments,
+} from "@/lib/authorization/staff-permissions";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import { listOffsetInput } from "./pagination";
 import {
@@ -152,10 +159,10 @@ type InventoryContext = {
 };
 
 const inventoryManagerProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk")
+  requirePermission("inventory.manage")
 );
 const productPricingProcedure = protectedProcedure.use(
-  requireRole("admin", "front_desk")
+  requirePermission("inventory.catalog.manage")
 );
 
 function activePracticePredicate(practiceId: string) {
@@ -200,6 +207,19 @@ async function practiceTimeZone(
 }
 
 export const inventoryRouter = createRouter({
+  managementPermissions: protectedProcedure.query(async ({ ctx }) => {
+    const assignments = await loadCustomRolePermissionAssignments(
+      ctx.db,
+      ctx.practiceId,
+      ctx.user.id,
+    );
+    const permissions = effectiveStaffPermissions(assignments, ctx.user.role);
+    return {
+      manageInventory: permissions.has("inventory.manage"),
+      manageCatalog: permissions.has("inventory.catalog.manage"),
+    };
+  }),
+
   // --- Products ---
 
   getById: protectedProcedure
@@ -346,14 +366,23 @@ export const inventoryRouter = createRouter({
   update: inventoryManagerProcedure
     .input(productUpdateInput)
     .mutation(async ({ ctx, input }) => {
-      if (
-        !canManageProductPricing(ctx.user.role) &&
-        PRODUCT_PRICING_FIELDS.some((field) => input[field] !== undefined)
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: PRODUCT_PRICING_FORBIDDEN_MESSAGE,
-        });
+      if (PRODUCT_PRICING_FIELDS.some((field) => input[field] !== undefined)) {
+        const assignments = await loadCustomRolePermissionAssignments(
+          ctx.db,
+          ctx.practiceId,
+          ctx.user.id,
+        );
+        if (
+          !effectiveStaffPermissions(
+            assignments,
+            ctx.user.role,
+          ).has("inventory.catalog.manage")
+        ) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+          });
+        }
       }
       const { id, ...updates } = input;
       // Filter out undefined values

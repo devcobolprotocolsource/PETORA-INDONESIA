@@ -11,7 +11,12 @@ import {
   type SQL,
   type SQLWrapper,
 } from "drizzle-orm";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+  requireRole,
+} from "../trpc";
 import {
   appointmentWaitlist,
   appointments,
@@ -108,7 +113,7 @@ const activeSchedulingStatuses = [
 ] as const;
 const unresolvedInvoiceStatuses = ["draft", "sent", "overdue"] as const;
 const clientManagerProcedure = protectedProcedure.use(
-  requireRole("admin", "veterinarian", "technician", "front_desk"),
+  requirePermission("clients.manage"),
 );
 type ClientsContext = {
   db: Pick<Database, "select">;

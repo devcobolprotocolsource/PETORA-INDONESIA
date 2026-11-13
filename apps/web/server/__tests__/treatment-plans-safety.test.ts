@@ -3,11 +3,28 @@ import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 const { treatmentPlansRouter } = await import("../routers/treatment-plans");
 
@@ -18,13 +35,13 @@ const PROBLEM_ID = "00000000-0000-0000-0000-000000000003";
 const PLAN_ID = "00000000-0000-0000-0000-000000000004";
 const ITEM_ID = "00000000-0000-0000-0000-000000000005";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
     user: {
       id: USER_ID,
-      email: "doctor@example.com",
+      email: `${role}@example.com`,
       name: "Doctor",
-      role: "veterinarian",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -83,6 +100,39 @@ afterEach(() => {
 });
 
 describe("treatment plan target safety", () => {
+  it("allows custom clinical permission and denies roles without it", async () => {
+    const denied = createDb();
+    await expect(
+      callerWithDb(denied.db, "front_desk").create({
+        patientId: PATIENT_ID,
+        title: "Dental plan",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(denied.select).not.toHaveBeenCalled();
+
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "appointments.clinical.manage",
+        roleActive: true,
+      },
+    ]);
+    const allowed = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [{ id: PATIENT_ID }]],
+      insertedRows: [{ id: PLAN_ID, patientId: PATIENT_ID }],
+    });
+
+    await expect(
+      callerWithDb(allowed.db, "custom").create({
+        patientId: PATIENT_ID,
+        title: "Dental plan",
+      }),
+    ).resolves.toMatchObject({ id: PLAN_ID, patientId: PATIENT_ID });
+    expect(allowed.insertValues).toHaveBeenCalledTimes(1);
+  });
+
   it("requires a tenant-owned patient before creating a plan", async () => {
     const { db, insertValues } = createDb({
       selectResults: [[{ id: PRACTICE_ID }], []],

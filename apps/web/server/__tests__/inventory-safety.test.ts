@@ -4,11 +4,28 @@ import { products } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
 }));
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      mocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 const { inventoryRouter } = await import("../routers/inventory");
 const { LIST_OFFSET_MAX } = await import("../routers/pagination");
@@ -99,6 +116,109 @@ afterEach(() => {
 });
 
 describe("inventory mutation safety", () => {
+  it("reports inventory and pricing permissions from the server", async () => {
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "inventory.manage",
+        roleActive: true,
+      },
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "inventory.catalog.manage",
+        roleActive: true,
+      },
+    ]);
+
+    await expect(
+      callerWithDb(createDb().db, "custom").managementPermissions(),
+    ).resolves.toEqual({ manageInventory: true, manageCatalog: true });
+  });
+
+  it("uses separate inventory and product-pricing permissions", async () => {
+    const inventoryPermission = {
+      assignmentActive: true,
+      locationId: null,
+      locationActive: true,
+      permissionKey: "inventory.manage",
+      roleActive: true,
+    };
+    const pricingPermission = {
+      ...inventoryPermission,
+      permissionKey: "inventory.catalog.manage",
+    };
+
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      inventoryPermission,
+    ]);
+    const detailsUpdate = createDb({
+      updatedRows: [{ id: PRODUCT_ID }],
+    });
+    await expect(
+      callerWithDb(detailsUpdate.db, "custom").update({
+        id: PRODUCT_ID,
+        name: "Carprofen 25mg",
+      }),
+    ).resolves.toMatchObject({ id: PRODUCT_ID });
+
+    mocks.loadCustomRolePermissionAssignments
+      .mockResolvedValueOnce([inventoryPermission])
+      .mockResolvedValueOnce([inventoryPermission]);
+    const deniedPricingUpdate = createDb();
+    await expect(
+      callerWithDb(deniedPricingUpdate.db, "custom").update({
+        id: PRODUCT_ID,
+        unitPrice: "12.50",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(deniedPricingUpdate.updateSet).not.toHaveBeenCalled();
+
+    const inventoryAndPricing = [inventoryPermission, pricingPermission];
+    mocks.loadCustomRolePermissionAssignments
+      .mockResolvedValueOnce(inventoryAndPricing)
+      .mockResolvedValueOnce(inventoryAndPricing);
+    const allowedPricingUpdate = createDb({
+      updatedRows: [{ id: PRODUCT_ID }],
+    });
+    await expect(
+      callerWithDb(allowedPricingUpdate.db, "custom").update({
+        id: PRODUCT_ID,
+        unitPrice: "12.50",
+      }),
+    ).resolves.toMatchObject({ id: PRODUCT_ID });
+
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      pricingPermission,
+    ]);
+    const catalogCreate = createDb({
+      selectResults: [[{ id: PRACTICE_ID }]],
+      insertedRows: [{ id: PRODUCT_ID, name: "Carprofen" }],
+    });
+    await expect(
+      callerWithDb(catalogCreate.db, "custom").create({
+        name: "Carprofen",
+        unitPrice: "12.50",
+      }),
+    ).resolves.toMatchObject({ id: PRODUCT_ID });
+
+    mocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      { ...inventoryPermission, locationId: "branch-a" },
+    ]);
+    const branchInventory = createDb();
+    await expect(
+      callerWithDb(branchInventory.db, "custom").adjustStock({
+        id: PRODUCT_ID,
+        adjustment: 1,
+        reason: "Cycle count",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(branchInventory.select).not.toHaveBeenCalled();
+  });
+
   it("keeps inventory writes restricted to non-viewer staff roles", async () => {
     const { db, select, insertValues, updateSet } = createDb();
     const viewer = callerWithDb(db, "viewer");

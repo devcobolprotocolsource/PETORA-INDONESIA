@@ -1,10 +1,30 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const permissionMocks = vi.hoisted(() => ({
+  loadCustomRolePermissionAssignments: vi.fn(async () => [] as Array<{
+    assignmentActive: boolean;
+    locationId: string | null;
+    locationActive: boolean;
+    permissionKey: string | null;
+    roleActive: boolean;
+  }>),
+}));
+
 const SETTINGS_SOURCE = readFileSync(
   new URL("../routers/settings.ts", import.meta.url),
   "utf8",
 );
+
+vi.mock("@/lib/authorization/staff-permissions", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/authorization/staff-permissions")>();
+  return {
+    ...actual,
+    loadCustomRolePermissionAssignments:
+      permissionMocks.loadCustomRolePermissionAssignments,
+  };
+});
 
 vi.mock("@/lib/billing/subscription-sync", () => ({
   syncPracticeSubscriptionQuantities: vi.fn(async () => ({
@@ -25,17 +45,18 @@ const USER_ID = "00000000-0000-0000-0000-000000000001";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000002";
 const OTHER_LOCATION_ID = "00000000-0000-0000-0000-000000000003";
 const ROOM_ID = "00000000-0000-0000-0000-000000000004";
+const TYPE_ID = "00000000-0000-0000-0000-000000000009";
 const STAFF_ID = "00000000-0000-0000-0000-000000000005";
 const PRODUCT_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
     user: {
       id: USER_ID,
       email: "admin@example.com",
       name: "Admin",
-      role: "admin",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -100,7 +121,7 @@ function createDb(opts?: {
     update,
   };
 
-  return { db, insertValues, operationOrder, updateSet };
+  return { db, insertValues, operationOrder, select, updateSet };
 }
 
 beforeEach(() => {
@@ -108,6 +129,92 @@ beforeEach(() => {
 });
 
 describe("settings location workflows", () => {
+  it("allows a custom role with settings.manage and rejects roles without it", async () => {
+    const { db: deniedDb, select: deniedSelect } = createDb();
+    await expect(
+      callerWithDb(deniedDb, "front_desk").listLocations(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(deniedSelect).not.toHaveBeenCalled();
+
+    permissionMocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "settings.manage",
+        roleActive: true,
+      },
+    ]);
+    const location = {
+      id: LOCATION_ID,
+      name: "Downtown Clinic",
+      address: null,
+      phone: null,
+      isPrimary: true,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    const { db } = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [location]],
+    });
+
+    await expect(callerWithDb(db, "viewer").listLocations()).resolves.toEqual([
+      location,
+    ]);
+    permissionMocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      {
+        assignmentActive: true,
+        locationId: null,
+        locationActive: true,
+        permissionKey: "settings.manage",
+        roleActive: true,
+      },
+    ]);
+    await expect(
+      callerWithDb(createDb().db, "viewer").canManagePracticeSettings(),
+    ).resolves.toBe(true);
+
+    const locationBlock = SETTINGS_SOURCE.match(
+      /\/\/ ── Locations[\s\S]+?\/\/ ── Onboarding/,
+    )?.[0];
+    expect(locationBlock?.match(/settingsManageProcedure/g)).toHaveLength(6);
+  });
+
+  it("allows settings.manage to read appointment types and rooms", async () => {
+    const managerAssignment = {
+      assignmentActive: true,
+      locationId: null,
+      locationActive: true,
+      permissionKey: "settings.manage",
+      roleActive: true,
+    };
+    const appointmentType = { id: TYPE_ID, name: "Wellness Visit" };
+    permissionMocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      managerAssignment,
+    ]);
+    const appointmentTypeDb = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [appointmentType]],
+    });
+    await expect(
+      callerWithDb(appointmentTypeDb.db, "viewer").listAppointmentTypes(),
+    ).resolves.toEqual([appointmentType]);
+
+    const room = { id: ROOM_ID, name: "Exam 1" };
+    permissionMocks.loadCustomRolePermissionAssignments.mockResolvedValueOnce([
+      managerAssignment,
+    ]);
+    const roomDb = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [room]],
+    });
+    await expect(callerWithDb(roomDb.db, "viewer").listRooms()).resolves.toEqual([
+      room,
+    ]);
+
+    const configBlock = SETTINGS_SOURCE.slice(
+      SETTINGS_SOURCE.indexOf("// ── Appointment Types"),
+    );
+    expect(configBlock?.match(/settingsManageProcedure/g)).toHaveLength(7);
+  });
+
   it("rejects location strings that exceed storage bounds before writes", async () => {
     const { db, insertValues, updateSet } = createDb();
 

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { eq, and, isNull, gte, gt, lt, inArray, not, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  protectedProcedure,
+  requirePermission,
+} from "../trpc";
 import {
   appointments,
   practices,
@@ -26,11 +30,88 @@ import {
   resolveAppointmentLocation,
   takeAppointmentSchedulingLock,
 } from "@/lib/scheduling/location";
+import {
+  effectiveStaffPermissions,
+  loadCustomRolePermissionAssignments,
+  type LegacyStaffRole,
+} from "@/lib/authorization/staff-permissions";
 
 type WhiteboardContext = {
   db: Database;
   practiceId: string;
 };
+
+async function appointmentLocationIdFromInput(
+  input: unknown,
+  ctx: { db: Database; practiceId: string },
+): Promise<string | undefined> {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("id" in input) ||
+    typeof input.id !== "string" ||
+    !z.string().guid().safeParse(input.id).success
+  ) {
+    return undefined;
+  }
+
+  const [appointment] = await ctx.db
+    .select({
+      locationId:
+        sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+    })
+    .from(appointments)
+    .leftJoin(
+      rooms,
+      and(
+        eq(appointments.roomId, rooms.id),
+        eq(rooms.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(rooms.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(appointments.id, input.id),
+        eq(appointments.practiceId, ctx.practiceId),
+        activePracticePredicate(ctx.practiceId),
+        isNull(appointments.deletedAt),
+      ),
+    )
+    .limit(1);
+
+  return appointment?.locationId ?? undefined;
+}
+
+const appointmentOperationsPermission = requirePermission(
+  "appointments.operations.manage",
+  { locationIdFromInput: appointmentLocationIdFromInput },
+);
+
+async function assertAppointmentOperationsPermission(
+  db: Database,
+  practiceId: string,
+  user: { id: string; role: LegacyStaffRole },
+  locationId: string | null,
+) {
+  const assignments = await loadCustomRolePermissionAssignments(
+    db,
+    practiceId,
+    user.id,
+  );
+  if (
+    !effectiveStaffPermissions(
+      assignments,
+      user.role,
+      locationId ?? undefined,
+    ).has("appointments.operations.manage")
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Your account does not have permission to perform this action.",
+    });
+  }
+}
 
 function activePracticePredicate(practiceId: string) {
   return sql`exists (
@@ -181,7 +262,7 @@ export const whiteboardRouter = createRouter({
   }),
 
   updateStatus: protectedProcedure
-    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .use(appointmentOperationsPermission)
     .input(
       z.object({
         id: z.string().guid(),
@@ -201,6 +282,8 @@ export const whiteboardRouter = createRouter({
             doctorId: appointments.doctorId,
             roomId: appointments.roomId,
             locationId: appointments.locationId,
+            effectiveLocationId:
+              sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
             patientId: appointments.patientId,
             clientId: appointments.clientId,
             activePatientId: patients.id,
@@ -209,6 +292,15 @@ export const whiteboardRouter = createRouter({
             endTime: appointments.endTime,
           })
           .from(appointments)
+          .leftJoin(
+            rooms,
+            and(
+              eq(appointments.roomId, rooms.id),
+              eq(rooms.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(rooms.deletedAt),
+            ),
+          )
           .leftJoin(
             patients,
             and(
@@ -244,6 +336,12 @@ export const whiteboardRouter = createRouter({
             message: "Appointment not found",
           });
         }
+        await assertAppointmentOperationsPermission(
+          tx as unknown as Database,
+          ctx.practiceId,
+          ctx.user,
+          current.effectiveLocationId,
+        );
         if (input.status === "checked_out") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
